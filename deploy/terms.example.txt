@@ -4,6 +4,6 @@ This service lets an AI assistant read your own Garmin Connect data through the 
 
 You enter your own Personal API key only. You are responsible for deciding to give that key to a third-party server, and for checking that doing so is allowed by Garmin's terms. This service is not affiliated with, endorsed by or supported by Garmin.
 
-The key is sealed inside the access token that your assistant stores. The service does not store the key or your data and does not log them. Anyone who holds your token can read your data until it expires, and disconnecting does not revoke it; to cut off access, revoke the key in your Garmin Connect account.
+The key is sealed inside the access token that your assistant stores. The service does not store the key or your data and does not log them. Anyone who holds your token can read your data until it expires or the key stops working, and disconnecting does not revoke it. Revoking the key in your Garmin Connect account ends access, but not at once: the service may keep using a Garmin session it obtained with the key earlier, which can last up to 24 hours after the key is revoked. To cut off access, revoke the key and also disconnect the connector in your assistant.
 
 The operator may change or stop the service at any time. Do not use the service if you do not agree to these terms.

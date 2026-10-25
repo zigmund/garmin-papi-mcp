@@ -78,7 +78,7 @@ An empty result is reported as "no data for this period", not as an error. A Gar
 2. Enter the MCP URL: `<public_url>/mcp`, for example `https://garmin-papi-mcp.zigmund.xyz/mcp`.
 3. When the client sends you to the login page, read it, paste your Personal API key, choose how long to stay connected, accept the terms if the operator set any, and press Authorize.
 
-If Garmin rejects the key (expired or revoked), the form shows an error. When a key stops working later, the server answers 401 and the client asks you to log in again.
+If Garmin rejects the key (expired or revoked), the form shows an error. When a key stops working later, the server answers 401 and the client asks you to log in again. That is not immediate: after a key expires or is revoked at Garmin, calls can keep working until the Garmin session the server cached for it expires (up to 24 hours).
 
 ## Run your own
 
@@ -108,7 +108,7 @@ Optional: write your own terms of use (see `deploy/terms.example.txt`, which is 
 ## Privacy and security
 
 - **The key is sealed into the tokens.** It is AES-256-GCM encrypted with the operator's token key and carried in the access and refresh tokens. It is never stored on the server and never logged. Logs carry metadata only (tool name, status, duration, client IP); never tokens, keys, Garmin JWTs, request or response bodies, or query strings.
-- **Tokens are bearer secrets and are not revoked.** Whoever holds a token can read your data until it expires. Disconnecting in the client does not invalidate it server-side (there is no database). To cut access immediately, revoke the Personal API key at Garmin (the next call then fails and the token is useless), or have the operator remove the token keys the tokens were sealed with (which signs everyone out).
+- **Tokens are bearer secrets and are not revoked.** Whoever holds a token can read your data until it expires or the key stops working. Disconnecting in the client does not invalidate it server-side (there is no database). Revoking the Personal API key at Garmin does not cut access at once either: the server keeps using the Garmin session (JWT) it cached for the key, so access ends only when that cached session expires, which can take up to 24 hours after the key is revoked at Garmin. To stop access, revoke the key at Garmin **and** disconnect the connector in the client. The operator can also remove the token keys the tokens were sealed with (which signs everyone out).
 - **Session length.** Access tokens last 1 h; refresh tokens 720 h idle; an absolute session limit of 90 days by default (`oauth.max_session_ttl`). The login form can let you choose a shorter or longer session (`oauth.session_choices`). All configurable by the operator.
 - **Garmin JWT.** The server exchanges your key for a Garmin JWT (valid 24 h) lazily and caches it in memory only, keyed by a hash of the key, until shortly before it expires. A restart drops the cache.
 - **TLS proxy.** A reverse proxy that terminates TLS sees the key in the form submission and the bearer tokens. Only use an operator you trust.
