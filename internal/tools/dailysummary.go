@@ -3,11 +3,19 @@ package tools
 import "net/url"
 
 func dailySummaryTool() Tool {
-	// Fields kept per day when a range is requested; use a single date for the
-	// full daily summary.
-	keys := []string{"calendarDate", "totalSteps", "dailyStepGoal", "totalDistanceMeters", "totalKilocalories", "activeKilocalories",
-		"floorsAscended", "moderateIntensityMinutes", "vigorousIntensityMinutes", "restingHeartRate", "minHeartRate", "maxHeartRate",
-		"averageStressLevel", "bodyBatteryHighestValue", "bodyBatteryLowestValue"}
+	// Range rows are nested; project them to a flat set of useful values
+	// (paths from the real dailysummaries shape), richest tier first.
+	full := []fieldA{fa("calendarDate", "calendarDate"), fa("steps", "movement", "steps", "value"), fa("stepGoal", "movement", "steps", "goal"),
+		fa("distanceMeters", "movement", "steps", "distanceInMeters"), fa("floorsAscended", "movement", "floorsAscended", "value"),
+		fa("caloriesTotal", "calories", "burnedTotal"), fa("caloriesActive", "calories", "burnedActive"),
+		fa("hrMin", "heartRate", "minValue"), fa("hrMax", "heartRate", "maxValue"), fa("hrResting", "heartRate", "restingValue"),
+		fa("intensityModerateMin", "intensityMinutes", "moderate"), fa("intensityVigorousMin", "intensityMinutes", "vigorous"),
+		fa("stressAvg", "stress", "avgLevel"), fa("bodyBatteryMin", "bodyBattery", "minValue"), fa("bodyBatteryMax", "bodyBattery", "maxValue"),
+		fa("bodyBatteryCharged", "bodyBattery", "chargedValue"), fa("bodyBatteryDrained", "bodyBattery", "drainedValue"),
+		fa("respirationAvg", "respiration", "avgValue")}
+	lean := []fieldA{fa("calendarDate", "calendarDate"), fa("steps", "movement", "steps", "value"), fa("caloriesTotal", "calories", "burnedTotal"),
+		fa("hrResting", "heartRate", "restingValue"), fa("stressAvg", "stress", "avgLevel"), fa("bodyBatteryMax", "bodyBattery", "maxValue")}
+	tiers := [][]fieldA{full, lean}
 	return specA{
 		name:  "get_daily_summary",
 		label: "daily summary",
@@ -23,7 +31,7 @@ func dailySummaryTool() Tool {
 		},
 		shape: func(data any, r reqA) (any, string) {
 			if r.isRange() && !r.full {
-				return compactRowsA(data, keys)
+				return projectRowsA(data, tiers)
 			}
 			return shrinkA(data, r.full)
 		},

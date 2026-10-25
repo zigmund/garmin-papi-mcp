@@ -13,6 +13,6 @@ func bodyBatteryTool() Tool {
 		rng: func(f, t string) (string, url.Values) {
 			return "wellness-service/wellness/bodyBattery/reports/daily", rangeQueryA(f, t)
 		},
-		shape: shrinkShapeA,
+		shape: bodyBatteryShapeA,
 	}.tool()
 }

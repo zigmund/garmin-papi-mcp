@@ -3,8 +3,17 @@ package tools
 import "net/url"
 
 func sleepTool() Tool {
-	keys := []string{"calendarDate", "sleepTimeSeconds", "deepSleepSeconds", "lightSleepSeconds", "remSleepSeconds", "awakeSleepSeconds",
-		"sleepStartTimestampGMT", "sleepEndTimestampGMT", "averageSpO2Value", "averageRespirationValue", "avgOvernightHrv", "restingHeartRate", "sleepScores", "overallScore"}
+	// Paths from the real dailySleepSummariesByDate shape. The score is
+	// sleepScores.overall; the other sleepScores entries are too bulky.
+	full := []fieldA{fa("calendarDate", "calendarDate"), fa("sleepTimeSeconds", "sleepTimeSeconds"), fa("deepSleepSeconds", "deepSleepSeconds"),
+		fa("lightSleepSeconds", "lightSleepSeconds"), fa("remSleepSeconds", "remSleepSeconds"), fa("awakeSleepSeconds", "awakeSleepSeconds"),
+		fa("awakeCount", "awakeCount"), fa("sleepScore", "sleepScores", "overall", "value"), fa("sleepScoreQualifier", "sleepScores", "overall", "qualifierKey"),
+		fa("avgSleepStress", "avgSleepStress"), fa("averageRespirationValue", "averageRespirationValue"),
+		fa("sleepStartTimestampGMT", "sleepStartTimestampGMT"), fa("sleepEndTimestampGMT", "sleepEndTimestampGMT")}
+	lean := []fieldA{fa("calendarDate", "calendarDate"), fa("sleepTimeSeconds", "sleepTimeSeconds"), fa("deepSleepSeconds", "deepSleepSeconds"),
+		fa("lightSleepSeconds", "lightSleepSeconds"), fa("remSleepSeconds", "remSleepSeconds"), fa("awakeSleepSeconds", "awakeSleepSeconds"),
+		fa("sleepScore", "sleepScores", "overall", "value"), fa("avgSleepStress", "avgSleepStress"), fa("averageRespirationValue", "averageRespirationValue")}
+	tiers := [][]fieldA{full, lean}
 	return specA{
 		name:  "get_sleep",
 		label: "sleep",
@@ -18,7 +27,7 @@ func sleepTool() Tool {
 		},
 		shape: func(data any, r reqA) (any, string) {
 			if r.isRange() && !r.full {
-				return compactRowsA(data, keys)
+				return projectRowsA(data, tiers)
 			}
 			return shrinkA(data, r.full)
 		},

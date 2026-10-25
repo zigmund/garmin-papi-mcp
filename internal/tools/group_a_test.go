@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zigmund/garmin-papi-mcp/internal/garmin"
 )
@@ -423,18 +425,56 @@ func TestErrorsNeverLeakKeyOrBodyA(t *testing.T) {
 	}
 }
 
-func TestRangeRowsFitBudgetA(t *testing.T) {
-	var sb strings.Builder
-	sb.WriteString("[")
-	for i := 0; i < 365; i++ {
-		if i > 0 {
-			sb.WriteString(",")
-		}
-		fmt.Fprintf(&sb, `{"calendarDate":"2025-%02d-%02d","totalSteps":%d,"totalKilocalories":2300,"restingHeartRate":50,"averageStressLevel":30,"junk":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`, i/28+1, i%28+1, 5000+i)
+func dayA(i int) string {
+	return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, i).Format("2006-01-02")
+}
+
+// summaryRangeA mirrors the nested dailysummaries response with synthetic values.
+func summaryRangeA(n int) string {
+	var rows []string
+	for i := 0; i < n; i++ {
+		rows = append(rows, fmt.Sprintf(`{"uuid":"u%d","userProfilePk":1,"calendarDate":"%s","source":"GARMIN","includesWellnessData":true,"includesActivityData":false,
+"wellnessChronology":{"startTimestampGmt":"2026-01-01T00:00:00.0","startTimestampLocal":"2026-01-01T00:00:00.0","endTimestampGmt":"2026-01-02T00:00:00.0","endTimestampLocal":"2026-01-02T00:00:00.0","totalDurationInMillis":86400000},
+"movement":{"steps":{"goal":8000,"value":%d,"distanceInMeters":%d},"pushes":{},"floorsAscended":{"goal":10,"value":%d,"distanceInMeters":30},"floorsDescended":{"value":8,"distanceInMeters":24}},
+"calories":{"burnedResting":1700,"burnedActive":%d,"burnedTotal":%d},
+"heartRate":{"minValue":44,"maxValue":%d,"restingValue":%d},
+"intensityMinutes":{"goal":150,"moderate":%d,"vigorous":5},
+"stress":{"avgLevel":%d,"maxLevel":90,"restProportion":0.5,"activityProportion":0.1,"uncategorizedProportion":0.1,"lowStressProportion":0.2,"mediumStressProportion":0.1,"highStressProportion":0.0,"qualifier":"balanced","totalDurationInMillis":1,"restDurationInMillis":1,"activityDurationInMillis":1,"uncategorizedDurationInMillis":1,"lowStressDurationInMillis":1,"mediumStressDurationInMillis":1,"highStressDurationInMillis":1},
+"bodyBattery":{"minValue":10,"maxValue":%d,"chargedValue":60,"drainedValue":55,"latestValue":40,"featureVersion":"3.0"},
+"hydration":{},"respiration":{"avgValue":15,"maxValue":20,"minValue":10,"latestValue":14,"latestTimestampGmt":"x","algorithmVersion":1},"pulseOx":{"avgAltitudeInMeters":100},"jetLag":{}}`,
+			i, dayA(i), 5000+i, 4000+i, 5+i%5, 500+i%100, 2200+i%100, 140+i%20, 50+i%10, 20+i%30, 25+i%20, 90+i%10))
 	}
-	sb.WriteString("]")
-	g := &fakeGetterA{replies: map[string]replyA{"usersummary-service/v2/dailysummaries": okA(sb.String())}}
-	res, err := runA(t, "get_daily_summary", g, `{"start_date":"2025-10-25","end_date":"2026-10-24"}`)
+	return `{"data":[` + strings.Join(rows, ",") + `]}`
+}
+
+func TestDailySummaryRangeKeepsUsefulValuesA(t *testing.T) {
+	g := &fakeGetterA{replies: map[string]replyA{"usersummary-service/v2/dailysummaries": okA(summaryRangeA(7))}}
+	res, err := runA(t, "get_daily_summary", g, `{"start_date":"2026-01-01","end_date":"2026-01-07"}`)
+	if err != nil || len(res.Errors) > 0 {
+		t.Fatalf("err=%v res=%+v", err, res)
+	}
+	rows := res.Data.([]any)
+	if len(rows) != 7 {
+		t.Fatalf("rows = %d", len(rows))
+	}
+	r := rows[3].(map[string]any)
+	want := map[string]float64{"steps": 5003, "caloriesTotal": 2203, "hrResting": 53, "hrMax": 143, "stressAvg": 28, "bodyBatteryMax": 93, "stepGoal": 8000, "intensityModerateMin": 23}
+	for k, v := range want {
+		if r[k] != v {
+			t.Errorf("%s = %v want %v (row %v)", k, r[k], v, r)
+		}
+	}
+	if r["calendarDate"] != "2026-01-04" {
+		t.Errorf("date = %v", r["calendarDate"])
+	}
+	if n := sizeA(t, res.Data); n > 8192 {
+		t.Fatalf("size %d", n)
+	}
+}
+
+func TestDailySummaryRange365StaysInBudgetA(t *testing.T) {
+	g := &fakeGetterA{replies: map[string]replyA{"usersummary-service/v2/dailysummaries": okA(summaryRangeA(365))}}
+	res, err := runA(t, "get_daily_summary", g, `{"start_date":"2026-01-01","end_date":"2026-12-31"}`)
 	if err != nil || len(res.Errors) > 0 {
 		t.Fatalf("err=%v res=%+v", err, res)
 	}
@@ -442,10 +482,116 @@ func TestRangeRowsFitBudgetA(t *testing.T) {
 		t.Fatalf("size %d", n)
 	}
 	if res.Note == "" {
-		t.Error("expected a note explaining the thinning")
+		t.Error("expected a note")
 	}
-	res, _ = runA(t, "get_daily_summary", g, `{"start_date":"2025-10-25","end_date":"2026-10-24","full":true}`)
-	if n := len(res.Data.([]any)); n != 365 {
+	rows := res.Data.([]any)
+	if r := rows[0].(map[string]any); r["steps"] == nil || r["calendarDate"] == nil {
+		t.Errorf("row lost values: %v", r)
+	}
+	res, _ = runA(t, "get_daily_summary", g, `{"start_date":"2026-01-01","end_date":"2026-12-31","full":true}`)
+	if n := len(res.Data.(map[string]any)["data"].([]any)); n != 365 {
 		t.Fatalf("full rows = %d", n)
+	}
+}
+
+func bodyBatteryDaysA(days, samples int) string {
+	var rows []string
+	for d := 0; d < days; d++ {
+		var pts []string
+		for i := 0; i < samples; i++ {
+			pts = append(pts, fmt.Sprintf("[%d,%d]", 1760000000000+d*86400000+i*180000, 20+(i+d)%70))
+		}
+		rows = append(rows, fmt.Sprintf(`{"date":"%s","charged":%d,"drained":50,"startTimestampGMT":"x","endTimestampGMT":"x","startTimestampLocal":"x","endTimestampLocal":"x","bodyBatteryValuesArray":[%s],"bodyBatteryValueDescriptorDTOList":[{"bodyBatteryValueDescriptorIndex":0,"bodyBatteryValueDescriptorKey":"timestamp"},{"bodyBatteryValueDescriptorIndex":1,"bodyBatteryValueDescriptorKey":"bodyBatteryLevel"}]}`,
+			dayA(d), 40+d, strings.Join(pts, ",")))
+	}
+	return "[" + strings.Join(rows, ",") + "]"
+}
+
+func TestBodyBattery31DaysKeepsEveryDayWithStatsA(t *testing.T) {
+	body := bodyBatteryDaysA(31, 480)
+	if len(body) < 50000 {
+		t.Fatalf("fixture too small: %d", len(body))
+	}
+	g := &fakeGetterA{replies: map[string]replyA{"wellness-service/wellness/bodyBattery/reports/daily": okA(body)}}
+	res, err := runA(t, "get_body_battery", g, `{"start_date":"2026-01-01","end_date":"2026-01-31"}`)
+	if err != nil || len(res.Errors) > 0 {
+		t.Fatalf("err=%v res=%+v", err, res)
+	}
+	if n := sizeA(t, res.Data); n > 8192 {
+		t.Fatalf("size %d", n)
+	}
+	var days []struct {
+		Date    string
+		Charged int
+		Drained int
+		Series  struct {
+			Min, Max, Mean float64
+			Count          int
+		} `json:"bodyBatteryValuesArray"`
+	}
+	if err := json.Unmarshal([]byte(mustJSONA(t, res.Data)), &days); err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 31 {
+		t.Fatalf("days = %d", len(days))
+	}
+	for i, d := range days {
+		if d.Date != dayA(i) || d.Charged != 40+i || d.Drained != 50 || d.Series.Count != 480 || d.Series.Min != 20 || d.Series.Max != 89 {
+			t.Fatalf("day %d: %+v", i, d)
+		}
+		if d.Series.Mean != math.Round(d.Series.Mean*10)/10 {
+			t.Fatalf("mean not rounded: %v", d.Series.Mean)
+		}
+	}
+	res, _ = runA(t, "get_body_battery", g, `{"start_date":"2026-01-01","end_date":"2026-01-31","full":true}`)
+	if first := res.Data.([]any)[0].(map[string]any); len(first["bodyBatteryValuesArray"].([]any)) != 480 {
+		t.Fatal("full did not keep all pairs")
+	}
+}
+
+func sleepRangeA(n int) string {
+	var rows []string
+	for i := 0; i < n; i++ {
+		q := func(extra string) string {
+			return `{"value":70,"qualifierKey":"GOOD"` + extra + `}`
+		}
+		rows = append(rows, fmt.Sprintf(`{"id":%d,"userProfilePK":1,"calendarDate":"%s","sleepTimeSeconds":%d,"napTimeSeconds":0,"sleepWindowConfirmed":true,"sleepWindowConfirmationType":"enhanced_confirmed_final",
+"sleepStartTimestampGMT":1760000000000,"sleepEndTimestampGMT":1760028000000,"sleepStartTimestampLocal":1,"sleepEndTimestampLocal":2,"autoSleepStartTimestampGMT":null,"autoSleepEndTimestampGMT":null,
+"unmeasurableSleepSeconds":0,"deepSleepSeconds":%d,"lightSleepSeconds":14000,"remSleepSeconds":5000,"awakeSleepSeconds":600,"deviceRemCapable":true,"retro":false,"sleepFromDevice":true,
+"averageRespirationValue":14.5,"lowestRespirationValue":10,"highestRespirationValue":20,"awakeCount":2,"avgSleepStress":18.5,"ageGroup":"ADULT",
+"sleepScoreFeedback":"POSITIVE_LONG_AND_DEEP","sleepScoreInsight":"NONE","sleepScorePersonalizedInsight":"NOT_AVAILABLE",
+"sleepScores":{"totalDuration":{"qualifierKey":"GOOD","optimalStart":28800,"optimalEnd":28800},"stress":{"qualifierKey":"FAIR","optimalStart":0,"optimalEnd":15},"awakeCount":{"qualifierKey":"GOOD","optimalStart":0,"optimalEnd":1},
+"overall":{"value":%d,"qualifierKey":"GOOD"},"remPercentage":%s,"restlessness":{"qualifierKey":"FAIR","optimalStart":0,"optimalEnd":5},"lightPercentage":%s,"deepPercentage":%s},"sleepVersion":2}`,
+			i, dayA(i), 27000+i, 7000+i, 60+i%30,
+			q(`,"optimalStart":21,"optimalEnd":31,"idealStartInSeconds":6000,"idealEndInSeconds":9000`),
+			q(`,"optimalStart":30,"optimalEnd":64,"idealStartInSeconds":6000,"idealEndInSeconds":9000`),
+			q(`,"optimalStart":16,"optimalEnd":33,"idealStartInSeconds":6000,"idealEndInSeconds":9000`)))
+	}
+	return "[" + strings.Join(rows, ",") + "]"
+}
+
+func TestSleep31NightsAllPresentWithinBudgetA(t *testing.T) {
+	g := &fakeGetterA{replies: map[string]replyA{"sleep-service/sleep/dailySleepSummariesByDate": okA(sleepRangeA(31))}}
+	res, err := runA(t, "get_sleep", g, `{"start_date":"2026-01-01","end_date":"2026-01-31"}`)
+	if err != nil || len(res.Errors) > 0 {
+		t.Fatalf("err=%v res=%+v", err, res)
+	}
+	if n := sizeA(t, res.Data); n > 8192 {
+		t.Fatalf("size %d", n)
+	}
+	rows := res.Data.([]any)
+	if len(rows) != 31 {
+		t.Fatalf("nights = %d (note %q)", len(rows), res.Note)
+	}
+	r := rows[5].(map[string]any)
+	if r["sleepScore"] != float64(65) || r["deepSleepSeconds"] != float64(7005) || r["sleepTimeSeconds"] != float64(27005) ||
+		r["avgSleepStress"] != 18.5 || r["calendarDate"] != dayA(5) {
+		t.Fatalf("row = %v", r)
+	}
+	// 7 nights fit the richer tier.
+	g.replies["sleep-service/sleep/dailySleepSummariesByDate"] = okA(sleepRangeA(7))
+	res, _ = runA(t, "get_sleep", g, `{"start_date":"2026-01-01","end_date":"2026-01-07"}`)
+	if r := res.Data.([]any)[0].(map[string]any); r["sleepScoreQualifier"] != "GOOD" || r["awakeCount"] != float64(2) {
+		t.Fatalf("rich row = %v", r)
 	}
 }

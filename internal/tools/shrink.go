@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 )
 
 // shrinkA bounds the size of a decoded Garmin payload. Large arrays of
@@ -108,8 +109,12 @@ func pairSeriesA(s []any, per int) (Series, bool) {
 	if len(pts) == 0 {
 		return Series{}, false
 	}
-	return Downsample(pts, per), true
+	out := Downsample(pts, per)
+	out.Mean = round1A(out.Mean)
+	return out, true
 }
+
+func round1A(f float64) float64 { return math.Round(f*10) / 10 }
 
 var valueKeysA = []string{"hrvValue", "spo2Reading", "spO2Reading", "value", "stressLevel", "bodyBattery", "heartRate"}
 
@@ -148,20 +153,81 @@ func objectSampleA(s []any, per int) (any, bool) {
 		}
 		if n > 0 {
 			out["field"] = key
-			out["min"], out["max"], out["mean"] = minV, maxV, sum/float64(n)
+			out["min"], out["max"], out["mean"] = minV, maxV, round1A(sum/float64(n))
 		}
 	}
 	return out, true
 }
 
+// fieldA projects one value of a nested row (path) to a flat output key.
+type fieldA struct {
+	out  string
+	path []string
+}
+
+func fa(out string, path ...string) fieldA { return fieldA{out: out, path: path} }
+
+func projectA(row map[string]any, fs []fieldA) map[string]any {
+	slim := map[string]any{}
+	for _, f := range fs {
+		var cur any = row
+		for _, k := range f.path {
+			m, ok := cur.(map[string]any)
+			if !ok {
+				cur = nil
+				break
+			}
+			cur = m[k]
+		}
+		if cur != nil {
+			slim[f.out] = cur
+		}
+	}
+	return slim
+}
+
+// rowsOfA finds the per-day rows of a range response: a top-level array, or
+// the "data" array (else the first array of objects) of a top-level object.
+func rowsOfA(data any) ([]any, bool) {
+	isObjs := func(v any) ([]any, bool) {
+		arr, ok := v.([]any)
+		if !ok || len(arr) == 0 {
+			return nil, false
+		}
+		_, ok = arr[0].(map[string]any)
+		return arr, ok
+	}
+	switch t := data.(type) {
+	case []any:
+		return isObjs(t)
+	case map[string]any:
+		if rows, ok := isObjs(t["data"]); ok {
+			return rows, true
+		}
+		for _, v := range t {
+			if rows, ok := isObjs(v); ok {
+				return rows, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func sizeOfA(v any) int {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return 1 << 30
+	}
+	return len(b)
+}
+
 // fitRowsA thins a list of per-day rows evenly so its JSON fits the budget.
-// It returns the rows and a note when rows were dropped.
 func fitRowsA(rows []any) ([]any, string) {
-	b, err := json.Marshal(rows)
-	if err != nil || len(b) <= outputBudgetA || len(rows) < 2 {
+	n := sizeOfA(rows)
+	if n <= outputBudgetA || len(rows) < 2 {
 		return rows, ""
 	}
-	keep := len(rows) * outputBudgetA / len(b)
+	keep := len(rows) * outputBudgetA / n
 	if keep < 2 {
 		keep = 2
 	}
@@ -169,53 +235,70 @@ func fitRowsA(rows []any) ([]any, string) {
 	return out, fmt.Sprintf("showing %d of %d days (evenly spaced) to keep the answer small; query a shorter range, or pass full=true for everything", len(out), len(rows))
 }
 
-// compactRowsA locates the per-day rows in a range response (a top-level array
-// or the first array of objects in a top-level object), keeps only the given
-// fields of each row (rows with none of them stay as they are) and thins the
-// list to the output budget.
-func compactRowsA(data any, keys []string) (any, string) {
-	var rows []any
-	var holder map[string]any
-	var holderKey string
-	switch t := data.(type) {
-	case []any:
-		rows = t
-	case map[string]any:
-		for k, v := range t {
-			if arr, ok := v.([]any); ok && len(arr) > 0 {
-				if _, isObj := arr[0].(map[string]any); isObj {
-					rows, holder, holderKey = arr, t, k
-					break
-				}
-			}
-		}
-	}
-	if rows == nil {
+// projectRowsA projects every per-day row onto the first tier of fields whose
+// JSON fits the budget (tiers go from richest to leanest). When even the last
+// tier is too big, rows are thinned evenly. The note says what was reduced.
+func projectRowsA(data any, tiers [][]fieldA) (any, string) {
+	rows, ok := rowsOfA(data)
+	if !ok {
 		return shrinkA(data, false)
 	}
-	compact := make([]any, len(rows))
-	for i, r := range rows {
-		m, ok := r.(map[string]any)
-		if !ok {
-			compact[i] = r
-			continue
-		}
-		slim := map[string]any{}
-		for _, k := range keys {
-			if v, ok := m[k]; ok {
-				slim[k] = v
+	var out []any
+	for i, fs := range tiers {
+		out = make([]any, len(rows))
+		for j, r := range rows {
+			m, _ := r.(map[string]any)
+			slim := projectA(m, fs)
+			if len(slim) == 0 {
+				out[j], _ = shrinkA(r, false)
+			} else {
+				out[j] = slim
 			}
 		}
-		if len(slim) == 0 {
-			compact[i], _ = shrinkA(r, false)
-		} else {
-			compact[i] = slim
+		if sizeOfA(out) <= outputBudgetA {
+			if i == 0 {
+				return out, ""
+			}
+			return out, fmt.Sprintf("per-day fields reduced to %d key values to keep the answer small; query a shorter range for more, or pass full=true for the raw data", len(fs))
 		}
 	}
-	compact, note := fitRowsA(compact)
-	if holder != nil {
-		out := map[string]any{holderKey: compact}
-		return out, note
+	thinned, note := fitRowsA(out)
+	return thinned, "per-day fields reduced; " + note
+}
+
+// bodyBatterySummaryA summarises each day's bodyBatteryValuesArray (stats plus
+// a few points) and keeps date, charged and drained for every day.
+func bodyBatteryShapeA(data any, r reqA) (any, string) {
+	rows, ok := rowsOfA(data)
+	if !ok || r.full {
+		return shrinkA(data, r.full)
 	}
-	return compact, note
+	for per := 96; ; per /= 2 {
+		out := make([]any, len(rows))
+		for i, row := range rows {
+			m, _ := row.(map[string]any)
+			slim := map[string]any{}
+			for _, k := range []string{"date", "charged", "drained"} {
+				if v, ok := m[k]; ok {
+					slim[k] = v
+				}
+			}
+			if arr, ok := m["bodyBatteryValuesArray"].([]any); ok {
+				if s, ok := pairSeriesA(arr, per); ok {
+					if per < 2 {
+						s.Points = [][2]float64{}
+					}
+					slim["bodyBatteryValuesArray"] = s
+				}
+			}
+			out[i] = slim
+		}
+		if sizeOfA(out) <= outputBudgetA || per < 2 {
+			note := ""
+			if per < 96 {
+				note = "Body Battery samples reduced per day (stats cover all samples); pass full=true for every sample"
+			}
+			return out, note
+		}
+	}
 }
