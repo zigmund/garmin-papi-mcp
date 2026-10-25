@@ -97,9 +97,10 @@ type Config struct {
 	Garmin    Garmin      `yaml:"garmin"`
 	TLS       TLS         `yaml:"tls"`
 
-	// AllowInsecureHTTP lets public_url, allowed_redirect_uris and garmin.base_url
-	// use plain http for non-loopback hosts (loopback hosts may always
-	// use http). Off by default.
+	// AllowInsecureHTTP lets public_url and allowed_redirect_uris use plain
+	// http for non-loopback hosts (loopback hosts may always use http). Off by
+	// default. It does not apply to garmin.base_url, which receives every
+	// user's API key: that one may use http only for a loopback host.
 	AllowInsecureHTTP bool `yaml:"allow_insecure_http"`
 
 	// TrustedProxies lists the CIDRs (or bare IPs) of reverse proxies whose
@@ -111,7 +112,7 @@ type Config struct {
 
 // Garmin configures the Garmin Connect Personal API client.
 type Garmin struct {
-	// BaseURL is the API origin (https unless loopback or allow_insecure_http).
+	// BaseURL is the API origin (https unless loopback; allow_insecure_http does not apply).
 	BaseURL string `yaml:"base_url"`
 	// Timeout bounds one request to the Garmin API.
 	Timeout time.Duration `yaml:"timeout"`
@@ -450,6 +451,10 @@ func insecureKey(k []byte) bool {
 // errInsecureScheme is returned for a non-https URL that is not exempt.
 var errInsecureScheme = errors.New("must use https (http is allowed only for loopback hosts or with allow_insecure_http)")
 
+// errGarminInsecureScheme is returned for a non-https, non-loopback
+// garmin.base_url, whatever allow_insecure_http says.
+var errGarminInsecureScheme = errors.New("must use https (http is allowed only for loopback hosts; allow_insecure_http does not apply because the API key is sent there)")
+
 // checkTransport requires https unless the host is loopback or allowInsecure
 // is set. raw must already have passed checkHTTPURL.
 func checkTransport(raw string, allowInsecure bool) error {
@@ -621,8 +626,10 @@ func (c *Config) validate() []error {
 
 	if err := checkHTTPURL(c.Garmin.BaseURL, false); err != nil {
 		add("garmin.base_url: %v", err)
-	} else if err := checkTransport(c.Garmin.BaseURL, c.AllowInsecureHTTP); err != nil {
-		add("garmin.base_url: %v", err)
+	} else if checkTransport(c.Garmin.BaseURL, false) != nil {
+		// Every user's API key is sent there: allow_insecure_http does not
+		// apply, plain http is for a local test server only.
+		add("garmin.base_url: %v", errGarminInsecureScheme)
 	}
 	if c.Garmin.Timeout <= 0 || c.Garmin.Timeout > MaxGarminTimeout {
 		add("garmin.timeout: must be a positive duration of at most %s", MaxGarminTimeout)
