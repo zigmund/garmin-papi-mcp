@@ -67,4 +67,11 @@ for p in CLAUDE.md AGENTS.md .claude/settings.json .agents/a.md .codex/a.md \
   check_forbidden "sub/dir/$p"
 done
 
+# Non-ASCII paths (git would quote them) and case variants.
+for p in "папка/CLAUDE.md" "папка/.claude/x" "папка/docs/superpowers/x" \
+  ".claude/файл.md" "memory/заметка.md" "claude.md" ".Claude/x" "Docs/superpowers/x" \
+  "sub/Agents.md" "Test/API.key"; do
+  check_forbidden "$p"
+done
+
 exit "$fail"
