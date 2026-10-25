@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 )
@@ -46,5 +47,28 @@ func TestAllReturnsFreshSlice(t *testing.T) {
 	b := All()
 	if len(b) != 17 || b[0].Name == "mutated" {
 		t.Fatalf("All() was affected by a caller's mutation: %d tools, first %q", len(b), b[0].Name)
+	}
+}
+
+// JSON Schema draft-04 requires "required" to have at least one element, so
+// a tool without required arguments must omit the key rather than send [].
+// Checked on the serialized schema, as clients see it.
+func TestNoEmptyRequiredInSchemas(t *testing.T) {
+	for _, tool := range All() {
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("%s: %v", tool.Name, err)
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("%s: %v", tool.Name, err)
+		}
+		req, ok := schema["required"]
+		if !ok {
+			continue
+		}
+		if list, _ := req.([]any); len(list) == 0 {
+			t.Errorf("%s: required = %v, want the key omitted when empty", tool.Name, req)
+		}
 	}
 }

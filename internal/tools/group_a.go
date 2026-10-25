@@ -160,7 +160,7 @@ func (s specA) tool() Tool {
 		"properties":           props,
 		"additionalProperties": false,
 	}
-	if required != nil {
+	if len(required) > 0 { // draft-04: never an empty "required"
 		schema["required"] = required
 	}
 	return Tool{
