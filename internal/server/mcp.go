@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/zigmund/garmin-papi-mcp/internal/config"
@@ -26,41 +27,56 @@ import (
 // the client must re-run authorization and the user enter a new key.
 const keyRejectedDescription = "Garmin rejected the API key"
 
+// mcpBodyReadTimeout bounds reading the request body of an MCP call (at most
+// mcp.MaxBodyBytes). A variable only so tests can shorten it.
+var mcpBodyReadTimeout = 30 * time.Second
+
 // mcpGuard protects the MCP endpoint. Order: path and method (free) ->
 // Origin -> per-IP rate (before the token is opened, so unauthenticated
-// floods are cut cheaply) -> bearer token -> body size and encoding ->
-// per-grant rate -> per-grant concurrency -> global in-flight cap -> body read
-// -> MCP handler. A refusal gives back the rate tokens taken before it.
+// floods are cut cheaply) -> bearer token (and the rejected-keys set) -> body
+// size and encoding -> body read under a deadline -> per-grant rate ->
+// per-grant concurrency -> global in-flight cap -> MCP handler. The body is
+// read before any slot is taken, so a slow client holds none. A refusal by
+// the cheap checks gives back the rate tokens taken before it.
 type mcpGuard struct {
-	origin string // public_url, the only accepted Origin
-	meta   string // resource_metadata URL advertised in challenges
-	open   func(token string) (apiKey string, err error)
-	sealer *seal.Sealer
-	limits *Limits
-	known  map[string]bool // registered tool names, for the request log
-	next   http.Handler
-	log    *slog.Logger
+	origin   string // public_url, the only accepted Origin
+	meta     string // resource_metadata URL advertised in challenges
+	open     func(token string) (apiKey string, err error)
+	sealer   *seal.Sealer
+	limits   *Limits
+	rejected *rejectedKeys   // keys Garmin rejected; nil disables the check
+	known    map[string]bool // registered tool names, for the request log
+	next     http.Handler
+	log      *slog.Logger
 }
 
 func newMCPGuard(cfg *config.Config, s *seal.Sealer, open func(string) (string, error), g tools.Getter,
-	toolset []tools.Tool, log *slog.Logger, clientIP func(*http.Request) string,
+	toolset []tools.Tool, rejected *rejectedKeys, log *slog.Logger, clientIP func(*http.Request) string,
 ) *mcpGuard {
 	safe := safeTools(toolset, log)
+	if rejected != nil {
+		safe = markRejected(safe, rejected)
+	}
 	known := make(map[string]bool, len(safe))
 	for _, t := range safe {
 		known[t.Name] = true
 	}
 	return &mcpGuard{
-		origin: cfg.PublicURL,
-		meta:   cfg.PublicURL + oauth.PathResourceMetadataPrefix + config.MCPPath,
-		open:   open,
-		sealer: s,
-		limits: newLimits(cfg.Limits, log, clientIP),
-		known:  known,
-		next:   recoverMCP(log, mcp.NewHandler(safe, g, apiKeyFromContext, log)),
-		log:    log,
+		origin:   cfg.PublicURL,
+		meta:     cfg.PublicURL + oauth.PathResourceMetadataPrefix + config.MCPPath,
+		open:     open,
+		sealer:   s,
+		limits:   newLimits(cfg.Limits, log, clientIP),
+		rejected: rejected,
+		known:    known,
+		next:     recoverMCP(log, mcp.NewHandler(safe, g, apiKeyFromContext, log)),
+		log:      log,
 	}
 }
+
+// bodyCap is the largest body the guard reads: limits.max_request_body, but
+// never more than the MCP handler accepts.
+func (g *mcpGuard) bodyCap() int64 { return min(g.limits.maxBody(), mcp.MaxBodyBytes) }
 
 func (g *mcpGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Only the exact path is served, and no encoded variant of it.
@@ -91,7 +107,7 @@ func (g *mcpGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	maxBody := g.limits.maxBody()
+	maxBody := g.bodyCap()
 	if r.ContentLength > maxBody {
 		g.limits.refundIP(ipKeys) // a cheap rejection, not abuse of the budget
 		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
@@ -102,22 +118,16 @@ func (g *mcpGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "content-encoding not supported", http.StatusUnsupportedMediaType)
 		return
 	}
+	body, ok := readBody(w, r, maxBody)
+	if !ok {
+		return
+	}
 	release, ok := g.limits.admit(w, ipKeys, grantKey(g.sealer, apiKey))
 	if !ok {
 		return
 	}
 	defer release()
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
-	if err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, "reading request body failed", http.StatusBadRequest)
-		return
-	}
 	info := g.peek(body)
 	if info.method != "" {
 		attrs := []slog.Attr{slog.String("rpc_method", info.method)}
@@ -131,6 +141,30 @@ func (g *mcpGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	g.next.ServeHTTP(w, r)
+}
+
+// readBody reads the request body, at most maxBody bytes, under
+// mcpBodyReadTimeout. On failure it has written the response (413 for a body
+// too large, 400 otherwise, the connection being cut on a timeout).
+func readBody(w http.ResponseWriter, r *http.Request, maxBody int64) ([]byte, bool) {
+	rc := http.NewResponseController(w)
+	// A writer without deadline support (tests) reads without one.
+	_ = rc.SetReadDeadline(time.Now().Add(mcpBodyReadTimeout))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	if err != nil {
+		// Close the connection: net/http would otherwise try to drain the
+		// rest of the body before answering. The deadline stays in place.
+		w.Header().Set("Connection", "close")
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return nil, false
+		}
+		http.Error(w, "reading request body failed", http.StatusBadRequest)
+		return nil, false
+	}
+	_ = rc.SetReadDeadline(time.Time{})
+	return body, true
 }
 
 // originAllowed reports whether the Origin header lines permit the request:
@@ -171,6 +205,12 @@ func (g *mcpGuard) authenticate(w http.ResponseWriter, r *http.Request) (string,
 	}
 	apiKey, err := g.open(raw)
 	switch {
+	case err == nil && g.rejected != nil && g.rejected.Rejected(apiKey):
+		// Garmin rejected this key recently: answer as Garmin would have,
+		// without asking it again, until the mark expires or the user signs
+		// in again with a working key.
+		g.log.Debug("mcp token rejected", "reason", "key_rejected")
+		g.challenge(w, "invalid_token", keyRejectedDescription)
 	case err == nil:
 		return apiKey, true
 	case errors.Is(err, seal.ErrExpired):
@@ -404,6 +444,25 @@ func safeTools(toolset []tools.Tool, log *slog.Logger) []tools.Tool {
 				res, err = tools.Result{Errors: []string{"internal error"}}, nil
 			}()
 			return h(ctx, c, apiKey, args)
+		}
+		out[i] = t
+	}
+	return out
+}
+
+// markRejected returns copies of toolset whose handlers add the caller's key
+// to rejected when Garmin rejects it (tools.ErrUnauthorized, which the MCP
+// handler answers with a 401).
+func markRejected(toolset []tools.Tool, rejected *rejectedKeys) []tools.Tool {
+	out := make([]tools.Tool, len(toolset))
+	for i, t := range toolset {
+		h := t.Handler
+		t.Handler = func(ctx context.Context, c tools.Getter, apiKey string, args json.RawMessage) (tools.Result, error) {
+			res, err := h(ctx, c, apiKey, args)
+			if errors.Is(err, tools.ErrUnauthorized) {
+				rejected.Add(apiKey)
+			}
+			return res, err
 		}
 		out[i] = t
 	}

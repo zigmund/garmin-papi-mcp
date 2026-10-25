@@ -121,9 +121,14 @@ func newHandler(cfg *config.Config, s *seal.Sealer, g *garmin.Client, log *slog.
 	// One resolver for the access log and the MCP rate limiter, so they
 	// agree; the OAuth handlers build the same one from cfg.TrustedNets.
 	res := httplog.NewResolver(cfg.TrustedNets)
-	oa := oauth.New(cfg, s, g, log)
+	// Keys Garmin rejected on a tool call, for as long as an access token
+	// issued before the rejection could live: the MCP endpoint refuses them
+	// without asking Garmin, and the refresh grant does not revive them. A
+	// working key on the authorize form clears the mark.
+	rejected := newRejectedKeys(s, cfg.OAuth.AccessTokenTTL, maxRejectedKeys)
+	oa := oauth.New(cfg, s, clearingValidator{v: g, rejected: rejected}, log, oauth.WithRejectionSource(rejected))
 	oa.RegisterRoutes(mux)
-	guard := newMCPGuard(cfg, s, oa.OpenAccess, g, toolset, log, res.ClientIP)
+	guard := newMCPGuard(cfg, s, oa.OpenAccess, g, toolset, rejected, log, res.ClientIP)
 	// Exact pattern (no trailing slash): ServeMux then matches only this
 	// path; /mcp/ and /mcp/x fall through to 404.
 	mux.Handle(config.MCPPath, withChallenge(guard.meta, guard))

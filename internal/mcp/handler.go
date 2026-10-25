@@ -17,10 +17,11 @@ import (
 // Version is the server version reported in initialize; set at build time.
 var Version = "dev"
 
-const (
-	maxBodyBytes    = 1 << 20
-	fallbackVersion = "2025-06-18"
-)
+// MaxBodyBytes is the largest JSON-RPC message body the handler accepts
+// (413 beyond). Callers that read the body first must not read more.
+const MaxBodyBytes = 1 << 20
+
+const fallbackVersion = "2025-06-18"
 
 var supportedVersions = map[string]bool{
 	"2024-11-05": true,
@@ -85,7 +86,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {

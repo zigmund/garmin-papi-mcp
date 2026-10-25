@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/hex"
 	"log/slog"
 	"math"
 	"net/http"
@@ -184,5 +183,5 @@ func retryAfterSeconds(d time.Duration) string {
 // is open) does not buy a fresh budget for the same key. It is held only in
 // memory and never logged.
 func grantKey(s *seal.Sealer, apiKey string) string {
-	return hex.EncodeToString(s.MAC(grantPurpose, []byte(apiKey)))
+	return keyMAC(s, grantPurpose, apiKey)
 }
