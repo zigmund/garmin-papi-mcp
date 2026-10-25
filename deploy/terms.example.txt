@@ -1,0 +1,9 @@
+Example terms of use. The operator of a server must write their own: this text is only a starting point, it is not legal advice, and it may not fit your situation or jurisdiction.
+
+This service lets an AI assistant read your own Garmin Connect data through the Garmin Connect Personal API, using the Personal API key you enter here. It is operated by an individual, is provided free of charge and as is, without any warranty or promise of availability.
+
+You enter your own Personal API key only. You are responsible for deciding to give that key to a third-party server, and for checking that doing so is allowed by Garmin's terms. This service is not affiliated with, endorsed by or supported by Garmin.
+
+The key is sealed inside the access token that your assistant stores. The service does not store the key or your data and does not log them. Anyone who holds your token can read your data until it expires, and disconnecting does not revoke it; to cut off access, revoke the key in your Garmin Connect account.
+
+The operator may change or stop the service at any time. Do not use the service if you do not agree to these terms.
