@@ -31,6 +31,8 @@ type ProxyLimits struct {
 	Disabled bool `yaml:"disabled"`
 
 	// IP is the per-client-IP token bucket, applied before the token is opened.
+	// A request whose token authenticates (and whose body is read) gets its
+	// IP token back, so it caps unauthenticated and invalid traffic only.
 	IP Limit `yaml:"ip"`
 	// Token is the per-grant token bucket (a grant is one Personal API key,
 	// shared by all OAuth clients; refreshing does not change it).

@@ -70,8 +70,8 @@ func (l *Limits) maxBody() int64 { return int64(l.cfg.MaxRequestBody) }
 
 // chargeIP takes one token per tier for the client IP, before the bearer token
 // is opened, so garbage and unauthenticated floods are rejected cheaply. It
-// returns the keys to refund if a later check refuses the request. On denial
-// it writes the 429.
+// returns the keys to refund if a later check refuses the request or once the
+// request has authenticated (see mcpGuard). On denial it writes the 429.
 func (l *Limits) chargeIP(w http.ResponseWriter, r *http.Request) (keys []string, ok bool) {
 	if l.ip == nil {
 		return nil, true

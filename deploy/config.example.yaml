@@ -87,7 +87,7 @@ oauth:
 # requests, so these are modest. Zero or unset means these defaults, -1
 # disables a single limit, "disabled: true" turns all of them off.
 # limits:
-#   ip:    { per_minute: 300, burst: 60 }   # per client IP, before the token is opened
+#   ip:    { per_minute: 300, burst: 60 }   # per client IP, before the token is opened; refunded once it authenticates (caps unauthenticated/invalid traffic)
 #   token: { per_minute: 60,  burst: 20 }   # per grant (one Personal API key, shared by all OAuth clients)
 #   max_concurrent_per_token: 16            # in-flight requests per grant
 #   max_in_flight: 1024                     # global in-flight requests (503 beyond)

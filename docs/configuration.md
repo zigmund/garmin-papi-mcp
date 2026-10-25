@@ -70,7 +70,7 @@ Zero or unset means the default; `-1` disables a single limit; `limits.disabled:
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `limits.ip.per_minute` / `burst` | 300 / 60 | Per client IP, before the token is opened |
+| `limits.ip.per_minute` / `burst` | 300 / 60 | Per client IP, charged before the token is opened and given back once the token authenticates and the body is read: it caps unauthenticated and invalid traffic only, because claude.ai and ChatGPT call for all their users from a few addresses. Authenticated calls are governed by the per-grant limits |
 | `limits.token.per_minute` / `burst` | 60 / 20 | Per grant (one Personal API key, shared by all OAuth clients) |
 | `limits.max_concurrent_per_token` | `16` | In-flight requests per grant |
 | `limits.max_in_flight` | `1024` | In-flight requests overall; beyond it 503 |

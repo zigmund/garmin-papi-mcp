@@ -38,9 +38,16 @@ var mcpBodyReadTimeout = 30 * time.Second
 // per-grant concurrency -> global in-flight cap -> MCP handler. The body is
 // read before any slot is taken, so a slow client holds none. A refusal by
 // the cheap checks gives back the rate tokens taken before it.
+//
+// The per-IP limit caps unauthenticated and invalid traffic only: once the
+// bearer token has authenticated and the body has been read, the IP tokens
+// are given back and the per-grant limits govern the request. Platforms such
+// as claude.ai call for all their users from a few egress addresses. A
+// missing, invalid or rejected token, or a body that cannot be read, stays
+// charged.
 type mcpGuard struct {
 	origins  map[string]bool // accepted Origin values, see allowedOrigins
-	meta     string // resource_metadata URL advertised in challenges
+	meta     string          // resource_metadata URL advertised in challenges
 	open     func(token string) (apiKey string, err error)
 	sealer   *seal.Sealer
 	limits   *Limits
@@ -122,9 +129,12 @@ func (g *mcpGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	body, ok := readBody(w, r, maxBody)
 	if !ok {
-		return
+		return // the IP stays charged: a broken or abandoned body
 	}
-	release, ok := g.limits.admit(w, ipKeys, grantKey(g.sealer, apiKey))
+	// Authenticated, with a complete body: from here on only the per-grant
+	// limits apply.
+	g.limits.refundIP(ipKeys)
+	release, ok := g.limits.admit(w, nil, grantKey(g.sealer, apiKey))
 	if !ok {
 		return
 	}
