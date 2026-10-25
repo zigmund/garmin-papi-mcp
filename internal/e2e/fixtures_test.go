@@ -126,7 +126,7 @@ func activityList(n int) string {
 			`"activityType":{"typeId":1,"typeKey":"running","parentTypeId":17,"isHidden":false,"trimmable":true},"eventType":{"typeId":9,"typeKey":"uncategorized"},`+
 			`"distance":10012.5,"duration":3000.7,"elapsedDuration":3100.2,"movingDuration":2990.1,"elevationGain":120.5,"elevationLoss":118.2,"averageSpeed":3.33,`+
 			`"maxSpeed":4.8,"averageHR":150,"maxHR":175,"calories":700,"avgPower":250,"aerobicTrainingEffect":3.4,"locationName":"Synthetic City",`+
-			`"startLatitude":43.2,"startLongitude":76.9,"endLatitude":43.2,"endLongitude":76.9,"ownerId":1,"ownerDisplayName":"synthetic","ownerFullName":"Synthetic User",`+
+			`"startLatitude":0,"startLongitude":0,"endLatitude":0,"endLongitude":0,"ownerId":1,"ownerDisplayName":"synthetic","ownerFullName":"Synthetic User",`+
 			`"deviceId":3000000000,"manufacturer":"GARMIN","bmrCalories":90,"averageRunningCadenceInStepsPerMinute":170.5,"maxRunningCadenceInStepsPerMinute":190,`+
 			`"steps":8400,"userRoles":["SCOPE_GLOBAL","ROLE_FITNESS_USER"],"privacy":{"typeId":2,"typeKey":"private"},"hasPolyline":true,"hasImages":false,`+
 			`"hrTimeInZone_1":300.1,"hrTimeInZone_2":900.2,"hrTimeInZone_3":1200.3,"hrTimeInZone_4":500.4,"hrTimeInZone_5":100.5,`+
