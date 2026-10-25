@@ -117,8 +117,10 @@ func TestHandlerInitialize(t *testing.T) {
 
 	rec = post(t, h, `{"jsonrpc":"2.0","id":"a","method":"initialize","params":{"protocolVersion":"1999-01-01"}}`)
 	res = decode(t, rec)["result"].(map[string]any)
-	if res["protocolVersion"] != "2025-06-18" {
-		t.Fatalf("fallback version %v", res["protocolVersion"])
+	// An unknown version gets the latest supported one (the client then
+	// decides whether it can speak it).
+	if res["protocolVersion"] != "2025-11-25" {
+		t.Fatalf("fallback version %v, want the latest supported 2025-11-25", res["protocolVersion"])
 	}
 }
 

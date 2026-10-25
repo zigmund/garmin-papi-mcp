@@ -48,7 +48,7 @@ func TestExampleConfigLoads(t *testing.T) {
 	if cfg.PublicURL != "https://garmin-papi-mcp.zigmund.xyz" {
 		t.Errorf("PublicURL = %q", cfg.PublicURL)
 	}
-	if cfg.Listen != "127.0.0.1:8787" {
+	if cfg.Listen != "127.0.0.1:8788" {
 		t.Errorf("Listen = %q", cfg.Listen)
 	}
 	if len(cfg.Secrets.Keys) != 1 {
@@ -56,6 +56,14 @@ func TestExampleConfigLoads(t *testing.T) {
 	}
 	if len(cfg.OAuth.AllowedRedirectURIs) != len(DefaultRedirectURIs()) {
 		t.Errorf("redirect URIs = %v", cfg.OAuth.AllowedRedirectURIs)
+	}
+	// The example offers the session choice the README describes.
+	var choices []string
+	for _, c := range cfg.OAuth.Sessions {
+		choices = append(choices, c.String())
+	}
+	if strings.Join(choices, ",") != "720h,2160h,8760h" || cfg.OAuth.DefaultSession.String() != "2160h" {
+		t.Errorf("session choices = %v (default %s), want 720h,2160h,8760h (default 2160h)", choices, cfg.OAuth.DefaultSession)
 	}
 }
 

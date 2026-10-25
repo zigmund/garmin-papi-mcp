@@ -8,6 +8,8 @@ Wants=network-online.target
 Type=exec
 ExecStart=/usr/local/bin/garmin-papi-mcp -config /etc/garmin-papi-mcp/config.yaml
 # SIGHUP is handled by the binary and does not stop it (reloads the TLS certificate when tls.* is set).
+# It reloads nothing else: the config and the token keys are read only at
+# start, so use `systemctl restart` after changing them.
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s

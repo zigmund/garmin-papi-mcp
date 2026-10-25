@@ -21,7 +21,10 @@ var Version = "dev"
 // (413 beyond). Callers that read the body first must not read more.
 const MaxBodyBytes = 1 << 20
 
-const fallbackVersion = "2025-06-18"
+// fallbackVersion answers an initialize with a protocol version this server
+// does not support: the latest supported one (MCP lifecycle: the server
+// responds with another version it supports, and the client decides).
+const fallbackVersion = "2025-11-25"
 
 var supportedVersions = map[string]bool{
 	"2024-11-05": true,

@@ -74,19 +74,20 @@ An empty result is reported as "no data for this period", not as an error. A Gar
 
 ## Connect from claude.ai or ChatGPT
 
-1. Add a custom connector (claude.ai: Settings -> Connectors -> Add custom connector; ChatGPT: Settings -> Connectors -> add a custom MCP connector).
+1. Add a custom connector (claude.ai: Settings -> Connectors -> Add custom connector; ChatGPT: turn on Developer mode under Settings -> Apps & Connectors -> Advanced settings, then add a custom MCP connector). Whether ChatGPT offers custom MCP connectors depends on your plan and, for workspaces, on the workspace settings.
 2. Enter the MCP URL: `<public_url>/mcp`, for example `https://garmin-papi-mcp.zigmund.xyz/mcp`.
 3. When the client sends you to the login page, read it, paste your Personal API key, choose how long to stay connected, accept the terms if the operator set any, and press Authorize.
 
-If Garmin rejects the key (expired or revoked), the form shows an error. When a key stops working later, the server answers 401 and the client asks you to log in again.
+If Garmin rejects the key (expired or revoked), the form shows an error. When a key stops working later, the server answers 401 and the client asks you to log in again. That is not immediate: after a key expires or is revoked at Garmin, calls can keep working until the Garmin session the server cached for it expires (up to 24 hours).
 
 ## Run your own
 
-Requirements: a Linux host with systemd, a DNS name, a TLS-terminating reverse proxy (for example nginx) in front of `127.0.0.1:8787`, or the built-in TLS (`tls.*`).
+Requirements: a Linux host with systemd, a DNS name, a TLS-terminating reverse proxy (for example nginx) in front of `127.0.0.1:8788`, or the built-in TLS (`tls.*`). For nginx, use the vhost in [docs/configuration.md, Reverse proxy](docs/configuration.md#reverse-proxy): it must overwrite `X-Forwarded-For` and `X-Real-IP`, or clients can get around the per-IP limits.
 
 ```sh
-# 1. Install the binary (from a release archive, or `make build`).
-install -m 0755 garmin-papi-mcp /usr/local/bin/garmin-papi-mcp
+# 1. Install the binary: `make build` writes bin/garmin-papi-mcp. From a release
+#    archive, use the garmin-papi-mcp in its unpacked directory instead.
+install -m 0755 bin/garmin-papi-mcp /usr/local/bin/garmin-papi-mcp
 
 # 2. Config and token encryption key (root-only; the unit hands a private copy to the service).
 install -d -m 0755 /etc/garmin-papi-mcp
@@ -98,21 +99,21 @@ openssl rand -base64 32 > /etc/garmin-papi-mcp/keys
 install -m 0644 deploy/garmin-papi-mcp.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now garmin-papi-mcp
-curl -fsS http://127.0.0.1:8787/healthz
+curl -fsS http://127.0.0.1:8788/healthz
 ```
 
-Every config key is described in [docs/configuration.md](docs/configuration.md); the design is in [docs/architecture.md](docs/architecture.md). Because the unit uses `DynamicUser=` and `LoadCredential=`, the config file holds only the path `/run/credentials/garmin-papi-mcp.service/keys`, never key material. To rotate the token key, add a new key as the first line (the older ones still decrypt) and reload. Replacing every key signs everyone out.
+Every config key is described in [docs/configuration.md](docs/configuration.md); the design is in [docs/architecture.md](docs/architecture.md). Because the unit uses `DynamicUser=` and `LoadCredential=`, the config file holds only the path `/run/credentials/garmin-papi-mcp.service/keys`, never key material. The token keys (and the rest of the config) are read only at startup, so after changing the keys file run `systemctl restart garmin-papi-mcp`; `systemctl reload` (SIGHUP) only reloads the TLS certificate. To start sealing with a new key, add it as the first line and restart: the older keys still decrypt, so this signs nobody out and cuts no access. Tokens sealed under a key stop working only once that key is removed from the file and the service restarted; removing every old key signs everyone out.
 
 Optional: write your own terms of use (see `deploy/terms.example.txt`, which is an example and not legal advice) and set `oauth.page.terms_file`, `oauth.page.contact` and `oauth.page.notice`.
 
 ## Privacy and security
 
 - **The key is sealed into the tokens.** It is AES-256-GCM encrypted with the operator's token key and carried in the access and refresh tokens. It is never stored on the server and never logged. Logs carry metadata only (tool name, status, duration, client IP); never tokens, keys, Garmin JWTs, request or response bodies, or query strings.
-- **Tokens are bearer secrets and are not revoked.** Whoever holds a token can read your data until it expires. Disconnecting in the client does not invalidate it server-side (there is no database). To cut access immediately, revoke the Personal API key at Garmin (the next call then fails and the token is useless), or have the operator rotate the token key.
+- **Tokens are bearer secrets and are not revoked.** Whoever holds a token can read your data until it expires or the key stops working. Disconnecting in the client does not invalidate it server-side (there is no database). Revoking the Personal API key at Garmin does not cut access at once either: the server keeps using the Garmin session (JWT) it cached for the key, so access ends only when that cached session expires, which can take up to 24 hours after the key is revoked at Garmin. To stop access, revoke the key at Garmin **and** disconnect the connector in the client. The operator can also remove the token keys the tokens were sealed with (which signs everyone out).
 - **Session length.** Access tokens last 1 h; refresh tokens 720 h idle; an absolute session limit of 90 days by default (`oauth.max_session_ttl`). The login form can let you choose a shorter or longer session (`oauth.session_choices`). All configurable by the operator.
 - **Garmin JWT.** The server exchanges your key for a Garmin JWT (valid 24 h) lazily and caches it in memory only, keyed by a hash of the key, until shortly before it expires. A restart drops the cache.
 - **TLS proxy.** A reverse proxy that terminates TLS sees the key in the form submission and the bearer tokens. Only use an operator you trust.
-- **Rate limits.** Every Garmin call leaves from the server's IP, so the server limits requests per IP and per token on the OAuth endpoints and the MCP endpoint, caps concurrency per token and in flight, and caps the request body. Defaults are in [docs/configuration.md](docs/configuration.md).
+- **Rate limits.** Every Garmin call leaves from the server's IP, so the server limits requests per IP on the OAuth endpoints, per IP (unauthenticated and invalid requests only) and per token on the MCP endpoint, caps concurrency per token and in flight, and caps the request body. Defaults are in [docs/configuration.md](docs/configuration.md).
 - **Redirect URIs are allow-listed** (claude.ai, claude.com, ChatGPT by default). Authorization uses PKCE S256, dynamic client registration and single-use codes and refresh tokens.
 - **Read-only.** Every tool is annotated read-only and only issues GET requests to Garmin.
 - **Hygiene.** This repository contains no real keys, tokens or user data; CI scans for secrets with gitleaks and blocks credentials and local agent files from being tracked.

@@ -20,7 +20,8 @@ const (
 
 // Limiter names in Server.limits. An IPv6 client is charged against one
 // limiter per tier (/64, /56, /48), named name, name+tier56 and name+tier48;
-// the unkeyed ceiling on authorize is globalKey.
+// the unkeyed ceilings on authorize are globalKey (codes issued) and
+// keyCheckKey (Garmin key checks).
 const (
 	tier56       = "/56"
 	tier48       = "/48"
@@ -29,6 +30,8 @@ const (
 	// a request, so it is throttled too, far more generously than the POST).
 	formKey   = "authorize_form"
 	globalKey = "authorize/global"
+	// keyCheckKey is the unkeyed ceiling on Garmin key checks of any outcome.
+	keyCheckKey = "authorize/key_check"
 
 	// globalLogInterval bounds how often the ceiling being hit is logged.
 	globalLogInterval = time.Minute
@@ -72,7 +75,7 @@ func (s *Handlers) warnGlobalOversized() {
 
 // newLimiters builds the limiters of every rate-limited endpoint (separate
 // bucket sets, IPv6 tiers scaled by ratelimit.Scale56/Scale48, plus the global
-// authorize ceiling), or nil when rate limiting is disabled. Zero config
+// authorize and key-check ceilings), or nil when rate limiting is disabled. Zero config
 // values mean the defaults, so a Config that skipped config.Parse still gets
 // limits.
 func newLimiters(rl config.RateLimit, codeTTL time.Duration, now func() time.Time) map[string]*ratelimit.Limiter {
@@ -84,7 +87,7 @@ func newLimiters(rl config.RateLimit, codeTTL time.Duration, now func() time.Tim
 	mk := func(l config.Limit, scale int) *ratelimit.Limiter {
 		return ratelimit.New(l.PerMinute*scale, l.Burst*scale, ratelimit.WithClock(now))
 	}
-	m := make(map[string]*ratelimit.Limiter, 13)
+	m := make(map[string]*ratelimit.Limiter, 14)
 	for name, l := range map[string]config.Limit{"register": rl.Register, authorizeKey: rl.Authorize, "token": rl.Token, formKey: rl.AuthorizeForm} {
 		m[name] = mk(l, 1)
 		m[name+tier56] = mk(l, ratelimit.Scale56)
@@ -98,6 +101,7 @@ func newLimiters(rl config.RateLimit, codeTTL time.Duration, now func() time.Tim
 		g.Burst = g.PerMinute
 	}
 	m[globalKey] = mk(g, 1)
+	m[keyCheckKey] = mk(rl.KeyCheckGlobal, 1)
 	return m
 }
 
@@ -168,6 +172,30 @@ func (s *Handlers) chargeGlobalAuthorize(w http.ResponseWriter) bool {
 	if n := global.TakeDenied(s.now(), globalLogInterval); n > 0 {
 		// Counts only; the clients are not identifiable (and not at fault).
 		s.log.Warn("global authorize ceiling reached; delaying new logins",
+			"endpoint", authorizeKey, "denied_since_last_log", n, "retry_after", wait.String())
+	}
+	w.Header().Set("Retry-After", retryAfterSeconds(wait))
+	return false
+}
+
+// chargeKeyCheck takes one token from the unkeyed ceiling on Garmin key
+// checks. It is called by the authorize submit handler right before the key is
+// sent to Garmin, so it counts checks of every outcome, but no submission
+// refused earlier (malformed form, terms, oversized key). When the ceiling is
+// empty it sets Retry-After on w and returns false: the caller answers 429 and
+// must not call Garmin.
+func (s *Handlers) chargeKeyCheck(w http.ResponseWriter) bool {
+	lim := s.limits[keyCheckKey]
+	if lim == nil {
+		return true
+	}
+	ok, wait := lim.Allow("")
+	if ok {
+		return true
+	}
+	if n := lim.TakeDenied(s.now(), globalLogInterval); n > 0 {
+		// Counts only; the clients are not identified.
+		s.log.Warn("global key-check ceiling reached; delaying key checks",
 			"endpoint", authorizeKey, "denied_since_last_log", n, "retry_after", wait.String())
 	}
 	w.Header().Set("Retry-After", retryAfterSeconds(wait))

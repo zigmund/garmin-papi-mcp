@@ -39,7 +39,7 @@ func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 const mcpPRM = PathResourceMetadataPrefix + "/mcp"
 
 func TestAuthServerMetadata(t *testing.T) {
-	for _, base := range []string{"https://mcp.example.com", "http://localhost:8787"} {
+	for _, base := range []string{"https://mcp.example.com", "http://localhost:8788"} {
 		mux := newMux(t, base)
 		want := AuthServerMetadata{
 			Issuer:                 base,
@@ -94,7 +94,7 @@ func TestResourceURL(t *testing.T) {
 	if got := ResourceURL("https://mcp.example.com"); got != "https://mcp.example.com/mcp" {
 		t.Errorf("ResourceURL = %q", got)
 	}
-	if ResourceURL("http://localhost:8787") != "http://localhost:8787"+config.MCPPath {
+	if ResourceURL("http://localhost:8788") != "http://localhost:8788"+config.MCPPath {
 		t.Error("ResourceURL does not use config.MCPPath")
 	}
 }

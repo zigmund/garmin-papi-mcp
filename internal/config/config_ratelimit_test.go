@@ -131,3 +131,29 @@ func TestTrustedProxiesInvalid(t *testing.T) {
 		}
 	}
 }
+
+// key_check_global is the unkeyed ceiling on Garmin key checks of any
+// outcome: unset or zero means 300 per minute, burst 100, like the other
+// limits; a partial setting keeps the other default; negatives are refused.
+func TestRateLimitKeyCheckGlobal(t *testing.T) {
+	cfg, err := Parse([]byte(base()), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := cfg.OAuth.RateLimit.KeyCheckGlobal; g != (Limit{300, 100}) || g != (Limit{DefaultKeyCheckGlobalPerMinute, DefaultKeyCheckGlobalBurst}) {
+		t.Errorf("default key_check_global = %+v, want 300/100", g)
+	}
+	cfg, err = Parse([]byte(base()+"\noauth:\n  rate_limit:\n    key_check_global: { per_minute: 12 }\n"), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := cfg.OAuth.RateLimit.KeyCheckGlobal; g != (Limit{12, DefaultKeyCheckGlobalBurst}) {
+		t.Errorf("key_check_global = %+v", g)
+	}
+	_, err = Parse([]byte(base()+"\noauth:\n  rate_limit:\n    key_check_global: { per_minute: -1, burst: -1 }\n"), ".")
+	for _, f := range []string{"oauth.rate_limit.key_check_global.per_minute", "oauth.rate_limit.key_check_global.burst"} {
+		if err == nil || !strings.Contains(err.Error(), f) {
+			t.Errorf("error lacks %s: %v", f, err)
+		}
+	}
+}

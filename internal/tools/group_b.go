@@ -38,16 +38,18 @@ func badArgsB(err error) (Result, error) {
 	return Result{Errors: []string{err.Error()}}, nil
 }
 
+// schemaB builds an object schema. "required" is omitted when empty: draft-04
+// requires at least one element there.
 func schemaB(props map[string]any, required ...string) map[string]any {
-	if required == nil {
-		required = []string{}
-	}
-	return map[string]any{
+	schema := map[string]any{
 		"type":                 "object",
 		"properties":           props,
-		"required":             required,
 		"additionalProperties": false,
 	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
 }
 
 func dateSchemaB(desc string) map[string]any {

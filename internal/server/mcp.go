@@ -38,9 +38,16 @@ var mcpBodyReadTimeout = 30 * time.Second
 // per-grant concurrency -> global in-flight cap -> MCP handler. The body is
 // read before any slot is taken, so a slow client holds none. A refusal by
 // the cheap checks gives back the rate tokens taken before it.
+//
+// The per-IP limit caps unauthenticated and invalid traffic only: once the
+// bearer token has authenticated and the body has been read, the IP tokens
+// are given back and the per-grant limits govern the request. Platforms such
+// as claude.ai call for all their users from a few egress addresses. A
+// missing, invalid or rejected token, or a body that cannot be read, stays
+// charged.
 type mcpGuard struct {
-	origin   string // public_url, the only accepted Origin
-	meta     string // resource_metadata URL advertised in challenges
+	origins  map[string]bool // accepted Origin values, see allowedOrigins
+	meta     string          // resource_metadata URL advertised in challenges
 	open     func(token string) (apiKey string, err error)
 	sealer   *seal.Sealer
 	limits   *Limits
@@ -62,7 +69,7 @@ func newMCPGuard(cfg *config.Config, s *seal.Sealer, open func(string) (string, 
 		known[t.Name] = true
 	}
 	return &mcpGuard{
-		origin:   cfg.PublicURL,
+		origins:  allowedOrigins(cfg),
 		meta:     cfg.PublicURL + oauth.PathResourceMetadataPrefix + config.MCPPath,
 		open:     open,
 		sealer:   s,
@@ -93,7 +100,9 @@ func (g *mcpGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// DNS-rebinding protection (MCP Streamable HTTP): a browser page from
 	// another origin must not reach the endpoint. Clients that send no
-	// Origin (server-side connectors, CLI clients) are unaffected.
+	// Origin (CLI clients) are unaffected, and so are the platforms this
+	// server redirects to (claude.ai, ChatGPT), whose backends may send
+	// their own Origin.
 	if !g.originAllowed(r.Header.Values("Origin")) {
 		g.log.Debug("mcp request with foreign origin refused")
 		http.Error(w, "forbidden origin", http.StatusForbidden)
@@ -120,9 +129,12 @@ func (g *mcpGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	body, ok := readBody(w, r, maxBody)
 	if !ok {
-		return
+		return // the IP stays charged: a broken or abandoned body
 	}
-	release, ok := g.limits.admit(w, ipKeys, grantKey(g.sealer, apiKey))
+	// Authenticated, with a complete body: from here on only the per-grant
+	// limits apply.
+	g.limits.refundIP(ipKeys)
+	release, ok := g.limits.admit(w, nil, grantKey(g.sealer, apiKey))
 	if !ok {
 		return
 	}
@@ -167,9 +179,40 @@ func readBody(w http.ResponseWriter, r *http.Request, maxBody int64) ([]byte, bo
 	return body, true
 }
 
+// allowedOrigins returns the Origin values the MCP endpoint accepts: the
+// origin of public_url and the origin (scheme, host and port) of every entry
+// of oauth.allowed_redirect_uris, the platforms whose backends call the
+// endpoint on the user's behalf. Authentication is by bearer token only (no
+// cookies), so accepting them adds no ambient authority.
+func allowedOrigins(cfg *config.Config) map[string]bool {
+	m := make(map[string]bool, 1+len(cfg.OAuth.AllowedRedirectURIs))
+	for _, raw := range append([]string{cfg.PublicURL}, cfg.OAuth.AllowedRedirectURIs...) {
+		if u, err := url.Parse(raw); err == nil && u.Scheme != "" && u.Host != "" {
+			m[canonicalOrigin(u)] = true
+		}
+	}
+	return m
+}
+
+// canonicalOrigin renders the origin of u: scheme and host lower-cased, an
+// IPv6 host bracketed, the port kept unless it is the scheme's default.
+func canonicalOrigin(u *url.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	defaultPort := scheme == "http" && u.Port() == "80" || scheme == "https" && u.Port() == "443"
+	if u.Port() != "" && !defaultPort {
+		host += ":" + u.Port()
+	}
+	return scheme + "://" + host
+}
+
 // originAllowed reports whether the Origin header lines permit the request:
-// none at all, or exactly one equal to public_url (scheme, host and port,
-// case-insensitive, default port implied).
+// none at all, or exactly one that is a bare origin (no userinfo, path other
+// than "/", query or fragment) equal, case-insensitively and with the default
+// port implied, to one of the allowed origins.
 func (g *mcpGuard) originAllowed(values []string) bool {
 	switch len(values) {
 	case 0:
@@ -183,16 +226,7 @@ func (g *mcpGuard) originAllowed(values []string) bool {
 		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
-	scheme := strings.ToLower(u.Scheme)
-	host := strings.ToLower(u.Hostname())
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	defaultPort := scheme == "http" && u.Port() == "80" || scheme == "https" && u.Port() == "443"
-	if u.Port() != "" && !defaultPort {
-		host += ":" + u.Port()
-	}
-	return scheme+"://"+host == g.origin
+	return g.origins[canonicalOrigin(u)]
 }
 
 // authenticate opens the bearer token and returns the API key it carries. On

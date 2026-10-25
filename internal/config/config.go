@@ -24,7 +24,7 @@ import (
 
 // Defaults applied when a field is omitted.
 const (
-	DefaultListen          = "127.0.0.1:8787"
+	DefaultListen          = "127.0.0.1:8788"
 	DefaultLogLevel        = "info"
 	DefaultLogFormat       = "json"
 	DefaultAccessTokenTTL  = time.Hour
@@ -58,6 +58,11 @@ const (
 	// because a browser may load the form repeatedly.
 	DefaultAuthorizeFormPerMinute = 300
 	DefaultAuthorizeFormBurst     = 100
+	// DefaultKeyCheckGlobalPerMinute/Burst are the unkeyed ceiling on Garmin
+	// key checks (every POST /oauth/authorize that reaches the check costs one
+	// Garmin call, whatever the outcome).
+	DefaultKeyCheckGlobalPerMinute = 300
+	DefaultKeyCheckGlobalBurst     = 100
 
 	// KeySize is the required decoded size of every token key (AES-256).
 	KeySize = 32
@@ -184,7 +189,7 @@ type OAuth struct {
 // RateLimit configures the per-IP token-bucket limits of the OAuth endpoints.
 // Zero or unset values mean the defaults; negative values are errors.
 type RateLimit struct {
-	// Disabled switches off every limit below, the global authorize ceiling
+	// Disabled switches off every limit below, the global ceilings
 	// included.
 	Disabled  bool  `yaml:"disabled"`
 	Register  Limit `yaml:"register"`  // POST /oauth/register
@@ -196,6 +201,10 @@ type RateLimit struct {
 	// AuthorizeGlobal is the unkeyed ceiling on all POST /oauth/authorize
 	// requests together. Zero values mean a default derived from code_ttl.
 	AuthorizeGlobal Limit `yaml:"authorize_global"`
+	// KeyCheckGlobal is the unkeyed ceiling on Garmin key checks of any
+	// outcome (accepted, rejected, no verdict), across all clients: each one
+	// is a Garmin call made on behalf of whoever submitted the form.
+	KeyCheckGlobal Limit `yaml:"key_check_global"`
 }
 
 // Limit is one endpoint's bucket: sustained PerMinute requests, bursts up to Burst.
@@ -218,6 +227,7 @@ func (r RateLimit) Resolved() RateLimit {
 	fill(&r.Authorize, DefaultAuthorizePerMinute, DefaultAuthorizeBurst)
 	fill(&r.Token, DefaultTokenPerMinute, DefaultTokenBurst)
 	fill(&r.AuthorizeForm, DefaultAuthorizeFormPerMinute, DefaultAuthorizeFormBurst)
+	fill(&r.KeyCheckGlobal, DefaultKeyCheckGlobalPerMinute, DefaultKeyCheckGlobalBurst)
 	return r
 }
 
@@ -644,6 +654,7 @@ func (c *Config) validate() []error {
 		{"token", c.OAuth.RateLimit.Token},
 		{"authorize_form", c.OAuth.RateLimit.AuthorizeForm},
 		{"authorize_global", c.OAuth.RateLimit.AuthorizeGlobal},
+		{"key_check_global", c.OAuth.RateLimit.KeyCheckGlobal},
 	} {
 		if l.v.PerMinute < 0 {
 			add("oauth.rate_limit.%s.per_minute: must not be negative", l.field)

@@ -66,6 +66,10 @@ type fakeGarmin struct {
 	reject    atomic.Bool  // exchange and data calls answer 401
 	status    atomic.Int32 // data calls answer this status when non-zero
 	retry     atomic.Value // string: Retry-After of an overridden status
+	body      atomic.Value // string: body of an overridden status; empty means a fixed JSON message
+	// deny401 (string): data calls whose path contains it answer 401 even
+	// with a valid JWT (an endpoint the key has no scope for).
+	deny401 atomic.Value
 
 	mu      sync.Mutex
 	auths   []string // Authorization of data calls
@@ -88,6 +92,8 @@ func newFakeGarmin(t *testing.T) *fakeGarmin {
 	t.Helper()
 	f := &fakeGarmin{jwt: fakeJWT()}
 	f.retry.Store("")
+	f.body.Store("")
+	f.deny401.Store("")
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -122,12 +128,21 @@ func (f *fakeGarmin) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	if p, _ := f.deny401.Load().(string); p != "" && strings.Contains(r.URL.Path, p) {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	if s := int(f.status.Load()); s != 0 {
 		if ra, _ := f.retry.Load().(string); ra != "" {
 			w.Header().Set("Retry-After", ra)
 		}
+		body, _ := f.body.Load().(string)
+		if body == "" {
+			body = `{"message":"synthetic failure body"}`
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(s)
-		_, _ = io.WriteString(w, `{"message":"synthetic failure body"}`)
+		_, _ = io.WriteString(w, body)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

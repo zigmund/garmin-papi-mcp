@@ -595,3 +595,12 @@ func TestSleep31NightsAllPresentWithinBudgetA(t *testing.T) {
 		t.Fatalf("rich row = %v", r)
 	}
 }
+
+// The stress endpoint returns per-day aggregates only (overall level and
+// durations), so the description must not promise samples.
+func TestStressDescriptionMatchesResponse(t *testing.T) {
+	d := stressTool().Description
+	if strings.Contains(strings.ToLower(d), "sample") || !strings.Contains(d, "overall stress level") {
+		t.Errorf("get_stress description = %q", d)
+	}
+}

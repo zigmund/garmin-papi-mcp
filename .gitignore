@@ -14,3 +14,11 @@ memory/
 
 # SDD scratch
 .superpowers/
+
+# Build output and local deployment files
+/garmin-papi-mcp
+bin/
+dist/
+*.pem
+/config.yaml
+/keys

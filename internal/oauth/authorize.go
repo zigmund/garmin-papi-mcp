@@ -248,8 +248,8 @@ func (s *Handlers) authorizeForm(w http.ResponseWriter, r *http.Request) *authFa
 // can only submit credentials the attacker already has, and the resulting
 // code goes to an allowlisted redirect URI whose client checks its own state.
 // The form is also a key-validity oracle (one Garmin call per submit); the
-// per-IP authorize rate limit bounds it, and a code is only ever issued for a
-// key Garmin accepts.
+// per-IP authorize rate limit and the global key-check ceiling bound it, and
+// a code is only ever issued for a key Garmin accepts.
 // The sealed field binds all request parameters (and expires), so the POST
 // cannot be steered elsewhere. As defence in depth a browser-declared
 // cross-site POST (Sec-Fetch-Site) is refused.
@@ -320,6 +320,14 @@ func (s *Handlers) authorizeSubmit(w http.ResponseWriter, r *http.Request) *auth
 		return nil
 	}
 
+	// Every key check is a Garmin call made for whoever submitted the form,
+	// whatever its outcome, so all of them together are capped (unkeyed). A
+	// refusal never reaches Garmin; the sealed request stays valid, so the
+	// form is shown again for a retry.
+	if !s.chargeKeyCheck(w) {
+		form(http.StatusTooManyRequests, uiMsg(msgTooManyRequests))
+		return nil
+	}
 	if msg, status := s.validateKey(r.Context(), apiKey, r); msg.ID != "" {
 		if status == http.StatusBadGateway {
 			w.Header().Set("Retry-After", retryAfterUnavailable)
