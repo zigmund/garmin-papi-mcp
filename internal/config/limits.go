@@ -35,8 +35,7 @@ type ProxyLimits struct {
 	// Token is the per-grant token bucket (a grant is one Personal API key,
 	// shared by all OAuth clients; refreshing does not change it).
 	Token Limit `yaml:"token"`
-	// MaxConcurrentPerToken caps in-flight requests per grant, an open SSE
-	// stream counting as one until it ends.
+	// MaxConcurrentPerToken caps in-flight requests per grant.
 	MaxConcurrentPerToken int `yaml:"max_concurrent_per_token"`
 	// MaxInFlight caps in-flight requests across the MCP endpoint (and sets
 	// Transport.MaxConnsPerHost). Beyond it requests get 503.
