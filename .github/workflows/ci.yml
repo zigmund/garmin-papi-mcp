@@ -43,7 +43,10 @@ jobs:
       - name: Check no secrets or agent files are tracked
         run: bash scripts/check-no-secrets.sh
 
-      - uses: gitleaks/gitleaks-action@v2.3.9
+      - name: Test the secrets check
+        run: bash scripts/check-no-secrets_test.sh
+
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
