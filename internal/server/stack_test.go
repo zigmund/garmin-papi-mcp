@@ -66,6 +66,9 @@ type fakeGarmin struct {
 	reject    atomic.Bool  // exchange and data calls answer 401
 	status    atomic.Int32 // data calls answer this status when non-zero
 	retry     atomic.Value // string: Retry-After of an overridden status
+	// deny401 (string): data calls whose path contains it answer 401 even
+	// with a valid JWT (an endpoint the key has no scope for).
+	deny401 atomic.Value
 
 	mu      sync.Mutex
 	auths   []string // Authorization of data calls
@@ -88,6 +91,7 @@ func newFakeGarmin(t *testing.T) *fakeGarmin {
 	t.Helper()
 	f := &fakeGarmin{jwt: fakeJWT()}
 	f.retry.Store("")
+	f.deny401.Store("")
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -119,6 +123,10 @@ func (f *fakeGarmin) serve(w http.ResponseWriter, r *http.Request) {
 	f.auths = append(f.auths, r.Header.Get("Authorization"))
 	f.mu.Unlock()
 	if f.reject.Load() || r.Header.Get("Authorization") != "Bearer "+f.jwt {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if p, _ := f.deny401.Load().(string); p != "" && strings.Contains(r.URL.Path, p) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}

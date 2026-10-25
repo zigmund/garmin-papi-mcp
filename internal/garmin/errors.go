@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// ErrKeyRejected means Garmin refused the API key (or the JWT minted from it
-// twice in a row).
+// ErrKeyRejected means Garmin refused the API key: the key-to-JWT exchange
+// answered 401 (also when it was retried after a data call's 401).
 var ErrKeyRejected = errors.New("garmin: api key rejected")
 
 // RateLimitedError is returned for HTTP 429. RetryAfter is zero when Garmin
@@ -21,8 +21,9 @@ func (e *RateLimitedError) Error() string {
 	return "garmin: rate limited"
 }
 
-// StatusError is returned for any non-2xx status other than 401 and 429.
-// The response body is deliberately not kept.
+// StatusError is returned for any non-2xx status other than 429, including a
+// data call's 401 that persists with a freshly exchanged JWT (the key works,
+// the endpoint refuses it). The response body is deliberately not kept.
 type StatusError struct{ Status int }
 
 func (e *StatusError) Error() string {

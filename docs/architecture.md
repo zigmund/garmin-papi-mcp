@@ -32,14 +32,14 @@ garmin-papi-mcp is one Go binary that is both an OAuth 2.1 authorization server 
 | `POST /oauth/token` | code and refresh token exchange | per-IP rate limit; refresh tokens are single use |
 | `POST /mcp` | MCP JSON-RPC (`initialize`, `tools/list`, `tools/call`) | bearer token required; per-IP and per-grant limits, concurrency caps, body cap |
 
-A missing, invalid or expired bearer token, or a Garmin 401 that survives one retry, gives `401` with a `WWW-Authenticate` challenge so the client re-runs OAuth.
+A missing, invalid or expired bearer token, or a Personal API key that Garmin rejects (its key-to-JWT exchange answers 401), gives `401` with a `WWW-Authenticate` challenge so the client re-runs OAuth. A rejected key is remembered (by a MAC, in memory) until the access token lifetime has passed or the user signs in again with a working key: until then its tokens get `401` without another Garmin call and the refresh grant answers `invalid_grant`.
 
 ## Tool call
 
 1. Per-IP limit, body cap, then the bearer token is opened (AES-256-GCM); it yields the Personal API key and the session limits.
 2. Per-grant limits (a grant is one key, shared by all OAuth clients).
 3. The tool validates its arguments (date format, range length) and calls one or two Garmin endpoints.
-4. The Garmin client uses the cached JWT for the key (hash of the key), or exchanges the key for a new one (24 h lifetime, refreshed shortly before expiry). On a Garmin 401 it drops the JWT, exchanges once more and retries once.
+4. The Garmin client uses the cached JWT for the key (hash of the key), or exchanges the key for a new one (24 h lifetime, refreshed shortly before expiry). On a Garmin 401 it drops the JWT, exchanges once more and retries once. A 401 from that exchange means the key is rejected (see above); a data endpoint that still answers 401 with the fresh JWT (for example one the key has no access to) only fails that tool call, with the tool error "Garmin returned HTTP 401", and the key stays usable for the other tools.
 5. The result is shaped for the model: large series downsampled with min/max/mean kept, empty results as "no data", partial failures reported next to the part that succeeded.
 
 ## State

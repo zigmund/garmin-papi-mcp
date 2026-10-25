@@ -101,3 +101,31 @@ func TestRejectedKeyForcesReauthorization(t *testing.T) {
 		t.Fatalf("old token after re-authorization = %+v", res)
 	}
 }
+
+// A data endpoint that keeps answering 401 after a successful re-exchange
+// (for example one the key has no scope for) fails that tool only: the key is
+// not marked rejected, the other tools keep working and the refresh grant
+// still issues tokens.
+func TestEndpoint401DoesNotRejectKey(t *testing.T) {
+	s := newStack(t, stackOpts{})
+	l := s.login(t)
+	s.garmin.deny401.Store("stats/steps")
+
+	steps := `{"start_date":"2026-01-01","end_date":"2026-01-02"}`
+	res := s.call(t, l.access, "get_steps", steps)
+	if !res.IsError || !strings.Contains(res.text(), "Garmin returned HTTP 401") {
+		t.Fatalf("get_steps = %+v, want the tool error \"Garmin returned HTTP 401\"", res)
+	}
+	// Again: still a tool error, never a 401 challenge.
+	resp, body := s.rpc(t, l.access, callBody("get_steps", steps))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second get_steps = %d %s, want 200 with a tool error", resp.StatusCode, body)
+	}
+	if res := s.call(t, l.access, "get_profile", "{}"); res.IsError {
+		t.Fatalf("get_profile after the endpoint 401 = %+v", res)
+	}
+	access, _ := s.token(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {l.refresh}, "client_id": {l.clientID}})
+	if res := s.call(t, access, "get_profile", "{}"); res.IsError {
+		t.Fatalf("get_profile with the refreshed token = %+v", res)
+	}
+}

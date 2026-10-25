@@ -83,10 +83,17 @@ func (c *Client) Get(ctx context.Context, apiKey, path string, query url.Values)
 		}
 		if status == http.StatusUnauthorized {
 			if attempt == 0 {
+				// The JWT may have been revoked or expired early: drop it
+				// and try once more with a fresh one. If that exchange
+				// answers 401, the key itself is rejected (ErrKeyRejected).
 				c.cache.invalidate(hashKey(apiKey), jwt)
 				continue
 			}
-			return Response{}, ErrKeyRejected
+			// The exchange that just succeeded proves the key works, so a
+			// 401 with the fresh JWT is about this endpoint (a scope the key
+			// lacks, say): a plain status error, not a rejected key. The
+			// fresh JWT stays cached; it is valid.
+			return Response{}, &StatusError{Status: status}
 		}
 		if err := statusErr(status, retryAfter); err != nil {
 			return Response{}, err
