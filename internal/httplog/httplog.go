@@ -2,19 +2,44 @@
 //
 // It records one "http request" record per request after the handler
 // returns: method, path (never the query string), status, response bytes,
-// duration, client address, user agent and protocol. Headers (Authorization,
-// Cookie, ...) and bodies are never logged.
+// duration, client address, user agent and protocol, plus any attributes the
+// handler added with Annotate. Headers (Authorization, Cookie, ...) and bodies
+// are never logged.
 package httplog
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
+
+type annotationsKey struct{}
+
+// annotations collects the attributes a handler adds to its request record.
+type annotations struct {
+	mu    sync.Mutex
+	attrs []slog.Attr
+}
+
+// Annotate adds attrs to the access log record of the request whose context
+// is ctx (or a context derived from it). Outside Middleware, or when debug
+// logging is off, it does nothing. Callers must pass only metadata: never
+// credentials, bodies or other request data verbatim.
+func Annotate(ctx context.Context, attrs ...slog.Attr) {
+	a, ok := ctx.Value(annotationsKey{}).(*annotations)
+	if !ok {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.attrs = append(a.attrs, attrs...)
+}
 
 // Option configures Middleware.
 type Option func(**Resolver)
@@ -48,9 +73,14 @@ func Middleware(log *slog.Logger, next http.Handler, opts ...Option) http.Handle
 		}
 		start := time.Now()
 		rw := &recorder{ResponseWriter: w}
+		ann := &annotations{}
+		r = r.WithContext(context.WithValue(ctx, annotationsKey{}, ann))
 		defer func() {
 			p := recover()
-			attrs := make([]slog.Attr, 0, 10)
+			ann.mu.Lock()
+			extra := ann.attrs
+			ann.mu.Unlock()
+			attrs := make([]slog.Attr, 0, 10+len(extra))
 			status := rw.status
 			if status == 0 && p == nil {
 				status = http.StatusOK
@@ -65,6 +95,7 @@ func Middleware(log *slog.Logger, next http.Handler, opts ...Option) http.Handle
 				slog.String("user_agent", r.UserAgent()),
 				slog.String("proto", r.Proto),
 			)
+			attrs = append(attrs, extra...)
 			if p != nil {
 				if p == http.ErrAbortHandler { //nolint:errorlint // net/http compares by identity
 					attrs = append(attrs, slog.Bool("aborted", true))
