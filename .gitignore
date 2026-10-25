@@ -1,0 +1,16 @@
+# Real credentials: never commit
+test/api.key
+test/access.token
+
+# Local agent files, specs and plans: not part of the repo
+docs/superpowers/
+CLAUDE.md
+AGENTS.md
+.claude/
+.agents/
+.codex/
+.beads/
+memory/
+
+# SDD scratch
+.superpowers/
