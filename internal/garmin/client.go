@@ -22,6 +22,9 @@ const (
 	acceptExchange   = "text/plain, */*"
 	acceptData       = "application/json, */*;q=0.1"
 	defaultUserAgent = "garmin-papi-mcp"
+	// maxRetryAfter caps a Retry-After from Garmin (it is shown to the model
+	// and must not overflow time.Duration).
+	maxRetryAfter = time.Hour
 )
 
 // Option configures a Client.
@@ -154,11 +157,30 @@ func (c *Client) do(ctx context.Context, method, target, auth, accept string, li
 	if int64(len(body)) > limit {
 		return Response{}, 0, 0, fmt.Errorf("garmin: response exceeds %d bytes", limit)
 	}
-	var retryAfter time.Duration
-	if secs, err := strconv.Atoi(strings.TrimSpace(res.Header.Get("Retry-After"))); err == nil && secs > 0 {
-		retryAfter = time.Duration(secs) * time.Second
-	}
+	retryAfter := parseRetryAfter(res.Header.Get("Retry-After"), c.now())
 	return Response{Status: res.StatusCode, Body: body, ContentType: res.Header.Get("Content-Type")}, res.StatusCode, retryAfter, nil
+}
+
+// parseRetryAfter reads a Retry-After value in either form (delay-seconds or
+// HTTP-date, RFC 9110 §10.2.3), relative to now. It returns 0 for a missing,
+// malformed or past value and caps the result at maxRetryAfter.
+func parseRetryAfter(v string, now time.Time) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	var d time.Duration
+	if secs, err := strconv.ParseUint(v, 10, 64); err == nil {
+		if secs >= uint64(maxRetryAfter/time.Second) {
+			return maxRetryAfter
+		}
+		d = time.Duration(secs) * time.Second
+	} else if errors.Is(err, strconv.ErrRange) {
+		return maxRetryAfter // all digits, too large for uint64
+	} else if t, err := http.ParseTime(v); err == nil {
+		d = t.Sub(now)
+	}
+	return min(max(d, 0), maxRetryAfter)
 }
 
 func statusErr(status int, retryAfter time.Duration) error {

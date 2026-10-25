@@ -293,11 +293,23 @@ func TestValidateForcesExchange(t *testing.T) {
 	}
 }
 
+// retryNow is the client clock of TestRateLimited429HasRetryAfter.
+var retryNow = time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+
 func TestRateLimited429HasRetryAfter(t *testing.T) {
 	for _, tc := range []struct {
 		hdr  string
 		want time.Duration
-	}{{"7", 7 * time.Second}, {"", 0}, {"soon", 0}} {
+	}{
+		{"7", 7 * time.Second}, {"", 0}, {"soon", 0}, {"0", 0}, {"-5", 0},
+		// Seconds are capped at one hour; a huge value must not overflow.
+		{"3600", time.Hour}, {"7200", time.Hour}, {"1000000000000", time.Hour},
+		{"99999999999999999999999", time.Hour},
+		// The HTTP-date form, relative to the client's clock, also capped.
+		{retryNow.Add(90 * time.Second).Format(http.TimeFormat), 90 * time.Second},
+		{retryNow.Add(48 * time.Hour).Format(http.TimeFormat), time.Hour},
+		{retryNow.Add(-time.Minute).Format(http.TimeFormat), 0},
+	} {
 		f := newFake(t)
 		f.dataFn = func(w http.ResponseWriter, r *http.Request, n int) {
 			if tc.hdr != "" {
@@ -306,7 +318,7 @@ func TestRateLimited429HasRetryAfter(t *testing.T) {
 			w.WriteHeader(429)
 			_, _ = w.Write([]byte("secret-body"))
 		}
-		c := NewClient(f.srv.URL, f.srv.Client())
+		c := NewClient(f.srv.URL, f.srv.Client(), WithClock(func() time.Time { return retryNow }))
 		_, err := c.Get(context.Background(), "k", "/p", nil)
 		var rl *RateLimitedError
 		if !errors.As(err, &rl) || rl.RetryAfter != tc.want {
