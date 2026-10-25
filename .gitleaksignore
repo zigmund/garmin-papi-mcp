@@ -1,0 +1,4 @@
+# Publicly known weak example key (bytes 0x00..0x1f), rejected by config
+# validation; not a secret. The literal was removed from the tree afterwards,
+# the historical commit stays in history.
+413bf79d0523914ddc9287bbdfbafc3d801b92e3:internal/config/config.go:generic-api-key:426

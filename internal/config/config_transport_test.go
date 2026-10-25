@@ -49,7 +49,7 @@ func TestConfigRejectsWeakTokenKeys(t *testing.T) {
 	}
 	good := base64.StdEncoding.DecodeString
 	random, _ := good(testKey("random"))
-	ex, _ := good(exampleKey)
+	ex := exampleKeyBytes()
 	cases := []struct {
 		name string
 		key  []byte

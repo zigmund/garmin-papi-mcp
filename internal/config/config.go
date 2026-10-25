@@ -419,17 +419,24 @@ func (c *Config) loadKeys() error {
 	return nil
 }
 
-// exampleKey is the key that older example configs shipped (bytes 0x00..0x1f).
+// exampleKeyBytes is the key that older example configs shipped (bytes
+// 0x00..0x1f), built at run time so no key-looking literal sits in the source.
 // It is public, so it must never protect real tokens. insecureKey's
 // constant-step rule already covers it; the explicit match is kept so the
 // shipped example key stays rejected even if that heuristic changes.
-const exampleKey = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+func exampleKeyBytes() []byte {
+	b := make([]byte, KeySize)
+	for i := range b {
+		b[i] = byte(i)
+	}
+	return b
+}
 
 // insecureKey reports whether k is a known-weak token key: the published
 // example key, or any constant-stride byte sequence (all zero, all the same
 // byte, 0,1,2,... and the like).
 func insecureKey(k []byte) bool {
-	if ex, err := base64.StdEncoding.DecodeString(exampleKey); err == nil && bytes.Equal(k, ex) {
+	if bytes.Equal(k, exampleKeyBytes()) {
 		return true
 	}
 	for i := 2; i < len(k); i++ {
