@@ -3,6 +3,10 @@ title = "garmin-papi-mcp gitleaks config"
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Documentation placeholders"
-regexes = ['''(?i)(example|placeholder|changeme|xxxx+)''']
+# The publicly known weak example token key (bytes 0x00..0x1f). Config
+# validation rejects it on purpose, so the constant must exist in the source.
+[[allowlists]]
+description = "Known-weak example key rejected by config validation"
+condition = "AND"
+paths = ['''internal/config/config\.go''']
+regexes = ['''AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=''']
