@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -59,6 +61,9 @@ func TestMenstrualBothEmptyIsNoData(t *testing.T) {
 	if err != nil || res.IsError() || res.Data != nil || res.Note == "" || len(res.Errors) != 0 {
 		t.Fatalf("%+v %v", res, err)
 	}
+	if dq := g.calls[1].query; dq.Get("reducedResponse") != "true" || dq.Get("skipbm") != "true" {
+		t.Fatalf("dayview query %v", dq)
+	}
 	if len(g.calls) != 2 || g.calls[0].path != "periodichealth-service/menstrualcycle/summary/2026-02-01" || g.calls[1].path != "periodichealth-service/menstrualcycle/dayview/2026-02-01" {
 		t.Fatalf("calls %v", g.calls)
 	}
@@ -87,7 +92,7 @@ func TestNutritionEmptyDayIsNoData(t *testing.T) {
 	if err != nil || res.IsError() || res.Data != nil || res.Note == "" {
 		t.Fatalf("%+v %v", res, err)
 	}
-	if g.calls[0].path != "nutrition-service/food/logs/2026-02-01" || len(g.calls[0].query) != 0 {
+	if g.calls[0].path != "nutrition-service/food/logs/2026-02-01" || g.calls[0].query.Get("includeMedia") != "false" || len(g.calls[0].query) != 1 {
 		t.Fatalf("call %+v", g.calls[0])
 	}
 	g = newFakeB(map[string]respB{"food/logs": noContentB})
@@ -103,7 +108,64 @@ func TestNutritionWithFoodAndFlags(t *testing.T) {
 		t.Fatalf("%+v %v", res, err)
 	}
 	q := g.calls[0].query
-	if q.Get("includeGoals") != "true" || q.Get("includeNutrition") != "false" {
+	if q.Get("includeGoals") != "true" || q.Get("includeNutrition") != "false" || q.Get("includeMedia") != "false" {
 		t.Fatalf("query %v", q)
+	}
+}
+
+func TestGetWeightRangeCap31Days(t *testing.T) {
+	g := newFakeB(map[string]respB{"weight/range": okB(`{"a":1}`), "weightgoal": noContentB})
+	if res, _ := runB(t, "get_weight", g, `{"start_date":"2026-01-01","end_date":"2026-01-31"}`); res.IsError() {
+		t.Fatalf("31 days must pass: %+v", res)
+	}
+	g = newFakeB(nil)
+	if res, _ := runB(t, "get_weight", g, `{"start_date":"2026-01-01","end_date":"2026-02-01"}`); !res.IsError() || len(g.calls) != 0 {
+		t.Fatalf("32 days must be rejected: %+v", res)
+	}
+}
+
+func TestGetWeightBudget31Days(t *testing.T) {
+	var days []any
+	for i := 0; i < 31; i++ {
+		metric := map[string]any{"samplePk": 1000 + i, "date": 1700000000000 + i, "calendarDate": fmt.Sprintf("2026-01-%02d", i+1),
+			"weight": 70123.4, "bmi": 22.4, "bodyFat": 18.2, "bodyWater": 55.1, "boneMass": 3100, "muscleMass": 31000,
+			"physiqueRating": nil, "visceralFat": nil, "metabolicAge": nil, "sourceType": "INDEX_SCALE",
+			"timestampGMT": 1700000000000 + i, "weightDelta": 100.5}
+		days = append(days, map[string]any{
+			"summaryDate": fmt.Sprintf("2026-01-%02d", i+1), "numOfWeightEntries": 2,
+			"minWeight": 70000, "maxWeight": 70300, "avgWeight": 70123.4,
+			"latestWeight":     metric,
+			"allWeightMetrics": []any{metric, metric},
+		})
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"dailyWeightSummaries": days,
+		"totalAverage":         map[string]any{"from": 1, "until": 2, "weight": 70123.4, "bmi": 22.4},
+		"previousDateWeight":   map[string]any{"calendarDate": "2025-12-31", "weight": 70000},
+		"nextDateWeight":       nil,
+	})
+	g := newFakeB(map[string]respB{"weight/range": okB(string(payload)), "weightgoal": okB(`[{"weightGoal":68000,"startDate":"2026-01-01"}]`)})
+	res, err := runB(t, "get_weight", g, `{"start_date":"2026-01-01","end_date":"2026-01-31"}`)
+	if err != nil || res.IsError() {
+		t.Fatalf("%+v %v", res, err)
+	}
+	out, _ := json.Marshal(res.Data)
+	if len(out) > 8*1024 {
+		t.Fatalf("output %d bytes exceeds 8 KB", len(out))
+	}
+	s := string(out)
+	for _, bad := range []string{"previousDateWeight", "allWeightMetrics", "samplePk", "sourceType", "weightDelta"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("untrimmed %s", bad)
+		}
+	}
+	if !strings.Contains(s, `"bodyFat":18.2`) || !strings.Contains(s, "latestWeight") || !strings.Contains(s, "weightGoal") {
+		t.Errorf("trimmed too much: %s", s[:300])
+	}
+	// include_all keeps the raw reply
+	g = newFakeB(map[string]respB{"weight/range": okB(string(payload)), "weightgoal": noContentB})
+	res, _ = runB(t, "get_weight", g, `{"start_date":"2026-01-01","end_date":"2026-01-31","include_all":true}`)
+	if out, _ := json.Marshal(res.Data); !strings.Contains(string(out), "allWeightMetrics") {
+		t.Error("include_all must keep all measurements")
 	}
 }

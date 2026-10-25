@@ -37,8 +37,8 @@ func TestListActivitiesDefaultsAndCaps(t *testing.T) {
 
 func TestListActivitiesQueryMapping(t *testing.T) {
 	g := newFakeB(map[string]respB{"activities/search": okB(`[{"activityId":1}]`)})
-	args := `{"start":5,"limit":10,"favorite":true,"sort_order":"ASC","exclude_children":false,"sort_by":"startLocal","search":"morning","activity_type":"running","activity_sub_type":"trail","event_type":"race","min_distance":1000.5,"max_distance":20000,"min_duration":60,"max_duration":7200,"start_date":"2026-01-01","end_date":"2026-01-31",` +
-		`"min_elevation":1,"max_elevation":2,"min_latitude":3,"max_latitude":4,"min_longitude":5,"max_longitude":6,"min_depth":7,"max_depth":8,"min_deco_dive":9,"max_deco_dive":10,"min_elapsed_duration":11,"max_elapsed_duration":12,"min_bottom_time":13,"max_bottom_time":14,"min_avg_power":15,"max_avg_power":16,"excluded_activity_sub_type":"x","required_field":"averageHR"}`
+	args := `{"start":5,"limit":10,"favorite":true,"sort_order":"asc","exclude_children":false,"sort_by":"startLocal","search":"morning","activity_type":"running","activity_sub_type":"trail","event_type":"race","min_distance":1000,"max_distance":20000,"min_duration":60,"max_duration":7200,"start_date":"2026-01-01","end_date":"2026-01-31",` +
+		`"min_elevation":1,"max_elevation":2,"lower_latitude":3.5,"upper_latitude":4.5,"left_longitude":5.5,"right_longitude":6.5,"lower_max_depth":7,"upper_max_depth":8,"deco_dive":true,"min_elapsed_duration":11,"max_elapsed_duration":12,"min_bottom_time":13,"max_bottom_time":14,"min_avg_power":15,"excluded_activity_sub_type":["a","b"],"required_field":["averageHR","calories"]}`
 	if res, err := runB(t, "list_activities", g, args); err != nil || res.IsError() {
 		t.Fatalf("%+v %v", res, err)
 	}
@@ -46,29 +46,56 @@ func TestListActivitiesQueryMapping(t *testing.T) {
 		t.Fatalf("path %s", g.calls[0].path)
 	}
 	want := url.Values{
-		"start": {"5"}, "limit": {"10"}, "favorite": {"true"}, "sortOrder": {"ASC"}, "excludeChildren": {"false"},
+		"start": {"5"}, "limit": {"10"}, "favorite": {"1"}, "sortOrder": {"asc"}, "excludeChildren": {"false"},
 		"sortBy": {"startLocal"}, "search": {"morning"}, "activityType": {"running"}, "activitySubType": {"trail"},
-		"eventType": {"race"}, "minDistance": {"1000.5"}, "maxDistance": {"20000"}, "minDuration": {"60"},
+		"eventType": {"race"}, "minDistance": {"1000"}, "maxDistance": {"20000"}, "minDuration": {"60"},
 		"maxDuration": {"7200"}, "startDate": {"2026-01-01"}, "endDate": {"2026-01-31"},
-		"minElevation": {"1"}, "maxElevation": {"2"}, "minLatitude": {"3"}, "maxLatitude": {"4"},
-		"minLongitude": {"5"}, "maxLongitude": {"6"}, "minDepth": {"7"}, "maxDepth": {"8"},
-		"minDecoDive": {"9"}, "maxDecoDive": {"10"}, "minElapsedDuration": {"11"}, "maxElapsedDuration": {"12"},
-		"minBottomTime": {"13"}, "maxBottomTime": {"14"}, "minAvgPower": {"15"}, "maxAvgPower": {"16"},
-		"excludedActivitySubType": {"x"}, "requiredField": {"averageHR"},
+		"minElevation": {"1"}, "maxElevation": {"2"}, "lowerLatitude": {"3.5"}, "upperLatitude": {"4.5"},
+		"leftLongitude": {"5.5"}, "rightLongitude": {"6.5"}, "lowerMaxDepth": {"7"}, "upperMaxDepth": {"8"},
+		"decoDive": {"true"}, "minElapsedDuration": {"11"}, "maxElapsedDuration": {"12"},
+		"minBottomTime": {"13"}, "maxBottomTime": {"14"}, "minAvgPower": {"15"},
+		"excludedActivitySubType": {"a", "b"}, "requiredField": {"averageHR", "calories"},
 	}
 	got := g.calls[0].query
 	for k, v := range want {
-		if got.Get(k) != v[0] {
-			t.Errorf("query %s = %q, want %q", k, got.Get(k), v[0])
+		if strings.Join(got[k], ",") != strings.Join(v, ",") {
+			t.Errorf("query %s = %v, want %v", k, got[k], v)
 		}
 	}
 	if len(got) != len(want) {
 		t.Errorf("extra query params: %v", got)
 	}
-	// every schema property is covered by the mapping test
 	props := toolB(t, "list_activities").InputSchema["properties"].(map[string]any)
 	if len(props) != len(want) {
 		t.Errorf("schema has %d properties, mapping test covers %d", len(props), len(want))
+	}
+	if props["required_field"].(map[string]any)["type"] != "array" || props["min_distance"].(map[string]any)["type"] != "integer" {
+		t.Errorf("schema types: %v", props)
+	}
+}
+
+func TestListActivitiesFavoriteMapping(t *testing.T) {
+	for in, want := range map[string]string{`{"favorite":true}`: "1", `{"favorite":false}`: "0"} {
+		g := newFakeB(map[string]respB{"activities/search": okB(`[{"activityId":1}]`)})
+		runB(t, "list_activities", g, in)
+		if got := g.calls[0].query.Get("favorite"); got != want {
+			t.Errorf("%s: favorite=%q want %s", in, got, want)
+		}
+	}
+	g := newFakeB(map[string]respB{"activities/search": okB(`[{"activityId":1}]`)})
+	runB(t, "list_activities", g, `{}`)
+	if _, set := g.calls[0].query["favorite"]; set {
+		t.Error("favorite must be omitted when unset")
+	}
+}
+
+func TestListActivitiesIntegerParamsRejectFractions(t *testing.T) {
+	for _, a := range []string{`{"min_distance":1000.5}`, `{"max_duration":1.5}`, `{"min_elevation":0.1}`, `{"min_avg_power":2.5}`, `{"lower_max_depth":"5"}`, `{"required_field":"averageHR"}`, `{"required_field":[1]}`, `{"deco_dive":1}`} {
+		g := newFakeB(nil)
+		res, _ := runB(t, "list_activities", g, a)
+		if !res.IsError() || len(g.calls) != 0 {
+			t.Errorf("%s: want error without call, got %+v", a, res)
+		}
 	}
 }
 

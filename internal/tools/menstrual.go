@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 )
 
 func getMenstrualCycleTool() Tool {
@@ -21,7 +22,8 @@ func getMenstrualCycleTool() Tool {
 			}
 			parts, err := fetchPartsB(ctx, c, apiKey, []partB{
 				{name: "summary", path: "periodichealth-service/menstrualcycle/summary/" + a.Date},
-				{name: "dayview", path: "periodichealth-service/menstrualcycle/dayview/" + a.Date},
+				{name: "dayview", path: "periodichealth-service/menstrualcycle/dayview/" + a.Date,
+					q: url.Values{"reducedResponse": {"true"}, "skipbm": {"true"}}},
 			})
 			if err != nil {
 				return Result{}, err

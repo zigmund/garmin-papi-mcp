@@ -30,7 +30,7 @@ func getNutritionTool() Tool {
 			if _, err := ParseDate(a.Date); err != nil {
 				return badArgsB(err)
 			}
-			q := url.Values{}
+			q := url.Values{"includeMedia": {"false"}}
 			if a.IncludeGoals != nil {
 				q.Set("includeGoals", fmt.Sprint(*a.IncludeGoals))
 			}

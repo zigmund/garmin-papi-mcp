@@ -26,7 +26,7 @@ type activityParamB struct {
 var activityParamsB = []activityParamB{
 	{"start", "start", "integer", "Offset of the first activity to return (default 0)."},
 	{"limit", "limit", "integer", "Number of activities to return (default 20, maximum 100; larger values are capped)."},
-	{"favorite", "favorite", "boolean", "Only favorite activities."},
+	{"favorite", "favorite", "boolean", "true for only favorite activities, false for only non-favorites; omit for both."},
 	{"sort_order", "sortOrder", "string", "Sort direction, for example ASC or DESC."},
 	{"exclude_children", "excludeChildren", "boolean", "Exclude child activities of multisport activities."},
 	{"sort_by", "sortBy", "string", "Field to sort by."},
@@ -34,30 +34,28 @@ var activityParamsB = []activityParamB{
 	{"activity_type", "activityType", "string", "Activity type key, for example running."},
 	{"activity_sub_type", "activitySubType", "string", "Activity sub type key."},
 	{"event_type", "eventType", "string", "Event type key, for example race."},
-	{"min_distance", "minDistance", "number", "Minimum distance in meters."},
-	{"max_distance", "maxDistance", "number", "Maximum distance in meters."},
-	{"min_duration", "minDuration", "number", "Minimum duration in seconds."},
-	{"max_duration", "maxDuration", "number", "Maximum duration in seconds."},
+	{"min_distance", "minDistance", "integer", "Minimum distance in meters."},
+	{"max_distance", "maxDistance", "integer", "Maximum distance in meters."},
+	{"min_duration", "minDuration", "integer", "Minimum duration in seconds."},
+	{"max_duration", "maxDuration", "integer", "Maximum duration in seconds."},
 	{"start_date", "startDate", "string", "Only activities on or after this day, YYYY-MM-DD."},
 	{"end_date", "endDate", "string", "Only activities on or before this day, YYYY-MM-DD."},
-	{"min_elevation", "minElevation", "number", "Minimum elevation gain."},
-	{"max_elevation", "maxElevation", "number", "Maximum elevation gain."},
-	{"min_latitude", "minLatitude", "number", "Southern edge of the position box."},
-	{"max_latitude", "maxLatitude", "number", "Northern edge of the position box."},
-	{"min_longitude", "minLongitude", "number", "Western edge of the position box."},
-	{"max_longitude", "maxLongitude", "number", "Eastern edge of the position box."},
-	{"min_depth", "minDepth", "number", "Minimum dive depth."},
-	{"max_depth", "maxDepth", "number", "Maximum dive depth."},
-	{"min_deco_dive", "minDecoDive", "number", "Minimum deco dive value."},
-	{"max_deco_dive", "maxDecoDive", "number", "Maximum deco dive value."},
-	{"min_elapsed_duration", "minElapsedDuration", "number", "Minimum elapsed duration in seconds."},
-	{"max_elapsed_duration", "maxElapsedDuration", "number", "Maximum elapsed duration in seconds."},
-	{"min_bottom_time", "minBottomTime", "number", "Minimum dive bottom time."},
-	{"max_bottom_time", "maxBottomTime", "number", "Maximum dive bottom time."},
-	{"min_avg_power", "minAvgPower", "number", "Minimum average power."},
-	{"max_avg_power", "maxAvgPower", "number", "Maximum average power."},
-	{"excluded_activity_sub_type", "excludedActivitySubType", "string", "Activity sub type key to exclude."},
-	{"required_field", "requiredField", "string", "Only activities that have this field."},
+	{"min_elevation", "minElevation", "integer", "Minimum elevation gain in meters."},
+	{"max_elevation", "maxElevation", "integer", "Maximum elevation gain in meters."},
+	{"lower_latitude", "lowerLatitude", "number", "Southern edge of the position box."},
+	{"upper_latitude", "upperLatitude", "number", "Northern edge of the position box."},
+	{"left_longitude", "leftLongitude", "number", "Western edge of the position box."},
+	{"right_longitude", "rightLongitude", "number", "Eastern edge of the position box."},
+	{"lower_max_depth", "lowerMaxDepth", "integer", "Minimum maximum dive depth in cm."},
+	{"upper_max_depth", "upperMaxDepth", "integer", "Maximum maximum dive depth in cm."},
+	{"deco_dive", "decoDive", "boolean", "Only deco dives when true."},
+	{"min_elapsed_duration", "minElapsedDuration", "integer", "Minimum elapsed duration in seconds."},
+	{"max_elapsed_duration", "maxElapsedDuration", "integer", "Maximum elapsed duration in seconds."},
+	{"min_bottom_time", "minBottomTime", "integer", "Minimum dive bottom time."},
+	{"max_bottom_time", "maxBottomTime", "integer", "Maximum dive bottom time."},
+	{"min_avg_power", "minAvgPower", "integer", "Minimum average power."},
+	{"excluded_activity_sub_type", "excludedActivitySubType", "array", "Activity sub type keys to exclude (list of strings)."},
+	{"required_field", "requiredField", "array", "Only activities that have all of these fields (list of strings)."},
 }
 
 // activityFieldsB is the fixed set of fields kept per activity summary, so 20
@@ -76,7 +74,11 @@ var activityFieldsB = []string{
 func listActivitiesTool() Tool {
 	props := map[string]any{}
 	for _, p := range activityParamsB {
-		props[p.arg] = map[string]any{"type": p.kind, "description": p.desc}
+		prop := map[string]any{"type": p.kind, "description": p.desc}
+		if p.kind == "array" {
+			prop["items"] = map[string]any{"type": "string"}
+		}
+		props[p.arg] = prop
 	}
 	props["limit"].(map[string]any)["minimum"] = 1
 	props["start"].(map[string]any)["minimum"] = 0
@@ -105,7 +107,7 @@ func listActivities(ctx context.Context, c Getter, apiKey string, raw json.RawMe
 		if !ok {
 			return badArgsB(fmt.Errorf("invalid arguments: unknown argument %q", name))
 		}
-		s, n, err := queryValueB(p, v)
+		vals, n, err := queryValueB(p, v)
 		if err != nil {
 			return badArgsB(err)
 		}
@@ -123,11 +125,13 @@ func listActivities(ctx context.Context, c Getter, apiKey string, raw json.RawMe
 			limit = int(min(n, maxActivityLimitB))
 			continue
 		case "start_date", "end_date":
-			if _, err := ParseDate(s); err != nil {
+			if _, err := ParseDate(vals[0]); err != nil {
 				return badArgsB(err)
 			}
 		}
-		q.Set(p.query, s)
+		for _, x := range vals {
+			q.Add(p.query, x)
+		}
 	}
 	q.Set("start", strconv.Itoa(start))
 	q.Set("limit", strconv.Itoa(limit))
@@ -153,33 +157,53 @@ func listActivities(ctx context.Context, c Getter, apiKey string, raw json.RawMe
 }
 
 // queryValueB validates one argument against its declared kind and renders it
-// as a query value. For integer kinds n carries the numeric value.
-func queryValueB(p activityParamB, v json.RawMessage) (s string, n int64, err error) {
+// as query values (several for arrays). For integer kinds n carries the value.
+// The favorite flag maps to Garmin's integer: true is 1, false is 0.
+func queryValueB(p activityParamB, v json.RawMessage) (vals []string, n int64, err error) {
 	bad := func() error { return fmt.Errorf("invalid arguments: %s must be %s", p.arg, p.kind) }
 	switch p.kind {
 	case "string":
+		var s string
 		if err := json.Unmarshal(v, &s); err != nil || s == "" {
-			return "", 0, bad()
+			return nil, 0, bad()
 		}
+		vals = []string{s}
+	case "array":
+		var l []string
+		if err := json.Unmarshal(v, &l); err != nil || len(l) == 0 {
+			return nil, 0, bad()
+		}
+		for _, x := range l {
+			if x == "" {
+				return nil, 0, bad()
+			}
+		}
+		vals = l
 	case "boolean":
 		var b bool
 		if err := json.Unmarshal(v, &b); err != nil {
-			return "", 0, bad()
+			return nil, 0, bad()
 		}
-		s = strconv.FormatBool(b)
+		vals = []string{strconv.FormatBool(b)}
+		if p.arg == "favorite" {
+			vals = []string{"0"}
+			if b {
+				vals = []string{"1"}
+			}
+		}
 	case "integer", "number":
 		f, ok := numberB(v)
 		if !ok || (p.kind == "integer" && f != math.Trunc(f)) {
-			return "", 0, bad()
+			return nil, 0, bad()
 		}
 		if p.kind == "integer" {
 			n = int64(f)
-			s = strconv.FormatInt(n, 10)
+			vals = []string{strconv.FormatInt(n, 10)}
 		} else {
-			s = strconv.FormatFloat(f, 'f', -1, 64)
+			vals = []string{strconv.FormatFloat(f, 'f', -1, 64)}
 		}
 	}
-	return s, n, nil
+	return vals, n, nil
 }
 
 // numberB parses a JSON number (not a string) into a finite float64.
