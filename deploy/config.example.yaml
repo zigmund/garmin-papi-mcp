@@ -1,7 +1,7 @@
 # garmin-papi-mcp example configuration. See docs/configuration.md.
 
 # Address the HTTP server binds to (nginx terminates TLS in front of it).
-listen: 127.0.0.1:8787
+listen: 127.0.0.1:8788
 
 # Public base URL as seen by claude.ai or ChatGPT. Absolute https origin, no
 # path/query/fragment. http is accepted only for loopback hosts (localhost,

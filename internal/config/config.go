@@ -24,7 +24,7 @@ import (
 
 // Defaults applied when a field is omitted.
 const (
-	DefaultListen          = "127.0.0.1:8787"
+	DefaultListen          = "127.0.0.1:8788"
 	DefaultLogLevel        = "info"
 	DefaultLogFormat       = "json"
 	DefaultAccessTokenTTL  = time.Hour

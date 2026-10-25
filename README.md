@@ -82,7 +82,7 @@ If Garmin rejects the key (expired or revoked), the form shows an error. When a 
 
 ## Run your own
 
-Requirements: a Linux host with systemd, a DNS name, a TLS-terminating reverse proxy (for example nginx) in front of `127.0.0.1:8787`, or the built-in TLS (`tls.*`).
+Requirements: a Linux host with systemd, a DNS name, a TLS-terminating reverse proxy (for example nginx) in front of `127.0.0.1:8788`, or the built-in TLS (`tls.*`).
 
 ```sh
 # 1. Install the binary (from a release archive, or `make build`).
@@ -98,7 +98,7 @@ openssl rand -base64 32 > /etc/garmin-papi-mcp/keys
 install -m 0644 deploy/garmin-papi-mcp.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now garmin-papi-mcp
-curl -fsS http://127.0.0.1:8787/healthz
+curl -fsS http://127.0.0.1:8788/healthz
 ```
 
 Every config key is described in [docs/configuration.md](docs/configuration.md); the design is in [docs/architecture.md](docs/architecture.md). Because the unit uses `DynamicUser=` and `LoadCredential=`, the config file holds only the path `/run/credentials/garmin-papi-mcp.service/keys`, never key material. To rotate the token key, add a new key as the first line (the older ones still decrypt) and reload. Replacing every key signs everyone out.

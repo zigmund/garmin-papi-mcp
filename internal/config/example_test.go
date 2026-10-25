@@ -48,7 +48,7 @@ func TestExampleConfigLoads(t *testing.T) {
 	if cfg.PublicURL != "https://garmin-papi-mcp.zigmund.xyz" {
 		t.Errorf("PublicURL = %q", cfg.PublicURL)
 	}
-	if cfg.Listen != "127.0.0.1:8787" {
+	if cfg.Listen != "127.0.0.1:8788" {
 		t.Errorf("Listen = %q", cfg.Listen)
 	}
 	if len(cfg.Secrets.Keys) != 1 {

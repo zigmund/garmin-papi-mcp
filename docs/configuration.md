@@ -6,7 +6,7 @@ A single YAML file, passed with `-config`. Unknown keys are rejected. `deploy/co
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `listen` | `127.0.0.1:8787` | Address the HTTP server binds to |
+| `listen` | `127.0.0.1:8788` | Address the HTTP server binds to |
 | `public_url` | required | Public https origin, no path/query/fragment. The MCP URL is `<public_url>/mcp` |
 | `allow_insecure_http` | `false` | Allow plain http for non-loopback hosts in `public_url` and redirect URIs. It does not apply to `garmin.base_url`, which may use http only for loopback hosts |
 | `trusted_proxies` | `127.0.0.0/8`, `::1/128` | CIDRs or IPs whose `X-Forwarded-For` / `X-Real-IP` are trusted for the client IP. Setting it replaces the default; `/0` prefixes are rejected |

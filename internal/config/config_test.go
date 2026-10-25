@@ -50,7 +50,7 @@ func TestConfigDefaults(t *testing.T) {
 		name      string
 		got, want any
 	}{
-		{"listen", cfg.Listen, DefaultListen},
+		{"listen", cfg.Listen, "127.0.0.1:8788"},
 		{"public_url", cfg.PublicURL, "https://mcp.example.com"},
 		{"log.level", cfg.Log.Level, "info"},
 		{"log.format", cfg.Log.Format, "json"},
