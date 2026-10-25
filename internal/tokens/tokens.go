@@ -26,8 +26,9 @@ type Access struct {
 // code exchange) is shared by every token of one login, and Gen counts
 // rotations (0 for the first token). The token endpoint tracks the highest
 // redeemed Gen per Family in an in-memory cache until Exp; presenting a Gen
-// that is not newer revokes the whole family. The cache is per-process, so a
-// restart forgets it.
+// that is not newer revokes the whole family, except a retry of the last
+// redeemed Gen within a short grace window. The cache is per-process, so a
+// restart forgets it: spent and revoked tokens are accepted again until Exp.
 //
 // Start is the unix time of the original login (the code exchange) and is
 // copied unchanged on every rotation. Exp slides with each refresh, but the

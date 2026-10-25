@@ -1,4 +1,4 @@
-# Manual release workflow: test -> tag -> GoReleaser -> GitHub Release.
+# Manual release workflow: test -> tag -> GoReleaser -> GitHub Release -> provenance.
 # All actions are pinned to full commit SHAs (the comment gives the version).
 name: Release
 
@@ -75,7 +75,9 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
     permissions:
-      contents: write # push tag, create release
+      contents: write     # push tag, create release
+      id-token: write     # Sigstore signing certificate for the attestation
+      attestations: write # store the attestation
     steps:
       # Credentials are persisted deliberately: the tag push below needs them.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,6 +109,14 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # SLSA build provenance for the published files (GoReleaser's dist/),
+      # verifiable with `gh attestation verify` (see docs/releasing.md).
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/checksums.txt
 
       - name: Recovery instructions
         if: failure() && steps.tag.outputs.pushed == 'true'

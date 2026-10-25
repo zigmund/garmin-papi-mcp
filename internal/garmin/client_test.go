@@ -241,6 +241,85 @@ func TestPersistentDataEndpoint401IsStatusError(t *testing.T) {
 	}
 }
 
+// Once a data endpoint has answered 401 to a fresh JWT, later 401s with that
+// JWT fail at once: calls to an endpoint the key has no access to do not
+// exchange the key again each time, nor drop the JWT the other calls use. A
+// JWT that expires is still replaced, and the new one is checked afresh.
+func TestScoped401DoesNotReexchange(t *testing.T) {
+	f := newFake(t)
+	f.dataFn = func(w http.ResponseWriter, r *http.Request, n int) {
+		if strings.HasPrefix(r.URL.Path, "/scoped") {
+			w.WriteHeader(401)
+			return
+		}
+		_, _ = w.Write([]byte("fine"))
+	}
+	now := time.Unix(1_800_000_000, 0)
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	c := NewClient(f.srv.URL, f.srv.Client(), WithClock(clock))
+	ctx := context.Background()
+	scoped := func(path string) error {
+		_, err := c.Get(ctx, "k", path, nil)
+		var se *StatusError
+		if !errors.As(err, &se) || se.Status != http.StatusUnauthorized {
+			return fmt.Errorf("%s: err = %v, want StatusError 401", path, err)
+		}
+		return nil
+	}
+	if err := scoped("/scoped/1"); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.exchanges.Load(); n != 2 {
+		t.Fatalf("exchanges = %d, want the first call to retry once", n)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := scoped(fmt.Sprintf("/scoped/%d", i)); err != nil {
+				t.Error(err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := c.Get(ctx, "k", "/other", nil); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := f.exchanges.Load(); n != 2 {
+		t.Fatalf("exchanges = %d, want none after the first call", n)
+	}
+	if n := f.dataCalls.Load(); n != 2+20 {
+		t.Fatalf("data calls = %d, want no retries", n)
+	}
+	if f.lastAuth != "Bearer tok2.e30.sig" {
+		t.Fatalf("auth = %q, want the scoped JWT kept", f.lastAuth)
+	}
+
+	// The JWT expires (no exp claim: 23h fallback) and is replaced; the new
+	// one is not scoped, so its first 401 is retried once more.
+	mu.Lock()
+	now = now.Add(23 * time.Hour)
+	mu.Unlock()
+	if err := scoped("/scoped/1"); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.exchanges.Load(); n != 4 {
+		t.Fatalf("exchanges = %d after expiry, want a refresh and one retry", n)
+	}
+	if err := scoped("/scoped/1"); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.exchanges.Load(); n != 4 {
+		t.Fatalf("exchanges = %d, want the new scoped JWT kept", n)
+	}
+}
+
 // A 401 on a data call followed by an exchange that Garmin refuses is a
 // rejected key.
 func TestData401ThenExchange401IsKeyRejected(t *testing.T) {

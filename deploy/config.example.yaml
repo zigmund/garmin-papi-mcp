@@ -76,7 +76,7 @@ oauth:
   # values mean these defaults; they are generous because claude.ai and ChatGPT
   # use shared egress IPs.
   # rate_limit:
-  #   disabled: false                                  # also turns off authorize_global and key_check_global
+  #   disabled: false                                  # also turns off authorize_global, key_check_global and key_rejected
   #   register:  { per_minute: 60,  burst: 30 }
   #   token:     { per_minute: 300, burst: 100 }
   #   authorize: { per_minute: 30,  burst: 10 }
@@ -87,6 +87,9 @@ oauth:
   #   # Unkeyed ceiling on Garmin key checks (every authorize POST that reaches
   #   # the check is one Garmin call, whatever the outcome).
   #   key_check_global: { per_minute: 300, burst: 100 }
+  #   # Per-network (/24 IPv4, /48 IPv6) budget of keys Garmin rejects on the
+  #   # authorize form; accepted keys cost nothing.
+  #   key_rejected: { per_minute: 5, burst: 10 }
 
 # Limits on the MCP endpoint (429 + Retry-After per IP / per grant, 503 when
 # the global in-flight cap is reached). Every tool call is one or two Garmin
@@ -95,9 +98,9 @@ oauth:
 # limits:
 #   ip:    { per_minute: 300, burst: 60 }   # per client IP, before the token is opened; refunded once it authenticates (caps unauthenticated/invalid traffic)
 #   token: { per_minute: 60,  burst: 20 }   # per grant (one Personal API key, shared by all OAuth clients)
-#   max_concurrent_per_token: 16            # in-flight requests per grant
-#   max_in_flight: 1024                     # global in-flight requests (503 beyond)
-#   max_request_body: 10485760              # bytes (413 beyond), at least 1024; cannot be disabled; capped at 1 MiB
+#   max_concurrent_per_token: 16            # in-flight requests per grant (a body being read counts)
+#   max_in_flight: 1024                     # global in-flight requests (503 beyond; a body being read counts)
+#   max_request_body: 65536                 # bytes (413 beyond), 1024 to 65536; cannot be disabled
 
 # Garmin Connect Personal API client.
 # garmin:

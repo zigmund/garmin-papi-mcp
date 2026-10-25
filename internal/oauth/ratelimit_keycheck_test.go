@@ -12,13 +12,14 @@ import (
 )
 
 // newKeyCheck is newAZ with a global key-check ceiling of burst checks
-// (refilling one per second) and generous per-IP and code limits, so only
-// the key-check ceiling can refuse.
+// (refilling one per second) and generous per-IP, per-network and code
+// limits, so only the key-check ceiling can refuse.
 func newKeyCheck(t *testing.T, burst int) *azEnv {
 	t.Helper()
 	e := newAZ(t)
 	e.srv.cfg.OAuth.RateLimit = config.RateLimit{
 		Authorize:       config.Limit{PerMinute: 6000, Burst: 1000},
+		KeyRejected:     config.Limit{PerMinute: 6000, Burst: 1000},
 		AuthorizeGlobal: config.Limit{PerMinute: 6000, Burst: 1000},
 		KeyCheckGlobal:  config.Limit{PerMinute: 60, Burst: burst},
 	}

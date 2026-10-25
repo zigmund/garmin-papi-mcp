@@ -77,13 +77,17 @@ func TestListActivitiesQueryMapping(t *testing.T) {
 func TestListActivitiesFavoriteMapping(t *testing.T) {
 	for in, want := range map[string]string{`{"favorite":true}`: "1", `{"favorite":false}`: "0"} {
 		g := newFakeB(map[string]respB{"activities/search": okB(`[{"activityId":1}]`)})
-		runB(t, "list_activities", g, in)
+		if _, err := runB(t, "list_activities", g, in); err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
 		if got := g.calls[0].query.Get("favorite"); got != want {
 			t.Errorf("%s: favorite=%q want %s", in, got, want)
 		}
 	}
 	g := newFakeB(map[string]respB{"activities/search": okB(`[{"activityId":1}]`)})
-	runB(t, "list_activities", g, `{}`)
+	if _, err := runB(t, "list_activities", g, `{}`); err != nil {
+		t.Fatal(err)
+	}
 	if _, set := g.calls[0].query["favorite"]; set {
 		t.Error("favorite must be omitted when unset")
 	}

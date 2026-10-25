@@ -84,10 +84,20 @@ func (l *Limits) chargeIP(w http.ResponseWriter, r *http.Request) (keys []string
 	}
 	// Client IP only: never the query, headers or body.
 	l.log.Debug("mcp rate limit exceeded", "limit", "ip", "remote", ip, "retry_after", wait.String())
-	l.reportDenied("ip", l.ip[0])
+	// The denial is counted by the tier that refused it: every tier is
+	// reported, so a client rotating through /64s, refused only by its /56
+	// or /48, shows up as well.
+	for i, lim := range l.ip {
+		l.reportDenied(ipTiers[i], lim)
+	}
 	tooMany(w, wait)
 	return nil, false
 }
+
+// ipTiers names the per-IP tiers for the log, in the order of l.ip and
+// ratelimit.Keys: the address (IPv4) or its /64 (IPv6), then the IPv6 /56
+// and /48.
+var ipTiers = [...]string{"ip", "ip/56", "ip/48"}
 
 func (l *Limits) refundIP(keys []string) {
 	for i := range min(len(l.ip), len(keys)) {
@@ -100,7 +110,9 @@ func (l *Limits) refundIP(keys []string) {
 // check that refuses the request gives back what the earlier ones took (the
 // IP tokens passed in as ipKeys included), so a refused request costs nothing
 // and never holds a slot. On success the returned release must be called when
-// the response has finished. On denial admit has written the response.
+// the response has finished. On denial admit has written the response. The
+// guard calls it before reading the body, so the slots also bound the bodies
+// being read at once (see mcpGuard).
 func (l *Limits) admit(w http.ResponseWriter, ipKeys []string, grant string) (release func(), ok bool) {
 	if l.token != nil {
 		if ok, wait := l.token.Allow(grant); !ok {
@@ -157,7 +169,7 @@ func tooMany(w http.ResponseWriter, wait time.Duration) {
 	http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 }
 
-// reportDenied logs, at most once a minute per limit and with a count only
+// reportDenied logs, at most once a minute per limiter and with a count only
 // (the clients are not identified), that a rate limit refused requests.
 func (l *Limits) reportDenied(name string, lim *ratelimit.Limiter) {
 	if n := lim.TakeDenied(l.now(), limitLogInterval); n > 0 {

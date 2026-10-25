@@ -11,10 +11,16 @@ const (
 	DefaultProxyTokenBurst     = 20
 	DefaultMaxConcurrentPerTok = 16
 	DefaultMaxInFlight         = 1024
-	DefaultMaxRequestBody      = 10 << 20 // bytes
+	DefaultMaxRequestBody      = MaxMaxRequestBody // bytes
 
-	// MinMaxRequestBody is the smallest accepted max_request_body.
+	// MinMaxRequestBody and MaxMaxRequestBody bound max_request_body. A
+	// tools/call message is a few hundred bytes; 64 KiB leaves ample room for
+	// an initialize with large client capabilities while keeping small the
+	// memory that in-flight requests can pin (each holds at most one body). A
+	// larger value is rejected, not clamped, so the configured cap is the
+	// effective one.
 	MinMaxRequestBody = 1 << 10
+	MaxMaxRequestBody = 64 << 10
 )
 
 // Disable is the value that switches an individual proxy limit off. Zero or
@@ -42,8 +48,8 @@ type ProxyLimits struct {
 	// MaxInFlight caps in-flight requests across the MCP endpoint (and sets
 	// Transport.MaxConnsPerHost). Beyond it requests get 503.
 	MaxInFlight int `yaml:"max_in_flight"`
-	// MaxRequestBody caps the request body in bytes (413 beyond). It cannot be
-	// disabled.
+	// MaxRequestBody caps the request body in bytes (413 beyond), between
+	// MinMaxRequestBody and MaxMaxRequestBody. It cannot be disabled.
 	MaxRequestBody int `yaml:"max_request_body"`
 }
 
@@ -101,8 +107,8 @@ func (l ProxyLimits) validate() []error {
 	}
 	if l.MaxRequestBody < 0 {
 		add("max_request_body: must not be negative")
-	} else if l.MaxRequestBody > 0 && l.MaxRequestBody < MinMaxRequestBody {
-		add("max_request_body: must be at least %d bytes", MinMaxRequestBody)
+	} else if l.MaxRequestBody > 0 && (l.MaxRequestBody < MinMaxRequestBody || l.MaxRequestBody > MaxMaxRequestBody) {
+		add("max_request_body: must be between %d and %d bytes", MinMaxRequestBody, MaxMaxRequestBody)
 	}
 	return errs
 }

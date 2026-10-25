@@ -28,6 +28,10 @@ type cacheEntry struct {
 	jwt    string
 	exp    time.Time
 	stored time.Time
+	// scoped is set once a data endpoint answered 401 to this JWT right
+	// after it was exchanged: the key works and the endpoint refuses it, so
+	// later 401s with this JWT are endpoint answers, not a revoked JWT.
+	scoped bool
 }
 
 type flight struct {
@@ -92,6 +96,24 @@ func (c *tokenCache) invalidate(key, jwt string) {
 	if e, ok := c.entries[key]; ok && e.jwt == jwt {
 		delete(c.entries, key)
 	}
+}
+
+// markScoped sets scoped on the entry for key if it still holds the given jwt.
+func (c *tokenCache) markScoped(key, jwt string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[key]; ok && e.jwt == jwt {
+		e.scoped = true
+		c.entries[key] = e
+	}
+}
+
+// scoped reports whether the entry for key holds the given jwt and is scoped.
+func (c *tokenCache) scoped(key, jwt string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	return ok && e.jwt == jwt && e.scoped
 }
 
 // get returns a valid cached JWT or runs exchange once per key, however many

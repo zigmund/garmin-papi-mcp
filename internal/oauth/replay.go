@@ -36,6 +36,15 @@ const (
 	// normally and at most once a second while a fail-closed cache is full.
 	sweepInterval     = time.Minute
 	fullSweepInterval = time.Second
+
+	// refreshRetryGrace is how long after a refresh token generation is first
+	// redeemed that presenting it again counts as a retry rather than a reuse
+	// (a grace period, as OAuth 2.1 rotation permits). It covers a client
+	// retrying a refresh whose response it lost to a timeout, and two workers
+	// of one client refreshing the same token at once. It is short and
+	// constant on purpose: within it a stolen token is not detected, so it only
+	// needs to outlast one HTTP round trip with its retry.
+	refreshRetryGrace = 30 * time.Second
 )
 
 var (
@@ -203,6 +212,7 @@ func (r *revocationSet) add(h uint64, exp, now time.Time) bool {
 type family struct {
 	id      string
 	usedGen int64     // highest generation redeemed so far
+	usedAt  time.Time // when usedGen was first redeemed; starts the retry grace
 	exp     time.Time // expiry of the newest token issued in the chain
 	// revoked marks a family whose reuse could not be recorded in the
 	// revocation set because that was full. It sits in the flagged list, is
@@ -212,9 +222,12 @@ type family struct {
 	elem    *list.Element // position in the active or flagged list
 }
 
-// familyCache enforces single-use refresh tokens with reuse detection, one
-// entry per chain rather than per token (so a refresh loop cannot grow it).
-// Like replayCache it is per-process and forgets everything on restart.
+// familyCache enforces single-use refresh tokens (bar a retry within
+// refreshRetryGrace) with reuse detection, one entry per chain rather than
+// per token (so a refresh loop cannot grow it). Like replayCache it is
+// per-process and forgets everything on restart: afterwards a spent refresh
+// token, and one of a family revoked for reuse, is accepted again until it
+// expires. Only removing the token key it was sealed with ends that.
 //
 // It tracks active chains in a bounded LRU and never fails closed because of
 // them: when full it evicts the least recently used one. Anyone can mint
@@ -292,10 +305,19 @@ func (c *familyCache) remove(f *family) {
 // use redeems generation gen of family id and extends the family's lifetime
 // to newExp (the expiry of the successor being issued). Atomically:
 //   - revoked family: errFamilyRevoked;
-//   - gen <= highest used generation: a reuse, so the whole family is revoked
-//     (kept in the revocation set until its expiry) and errFamilyRevoked is
-//     returned;
+//   - gen equal to the highest used generation, less than refreshRetryGrace
+//     after that generation was first redeemed: a retry, accepted again (the
+//     caller issues another successor) without moving the grace window;
+//   - gen <= highest used generation otherwise: a reuse, so the whole family
+//     is revoked (kept in the revocation set until its expiry) and
+//     errFamilyRevoked is returned;
 //   - otherwise gen is recorded as used.
+//
+// A retry never detects theft: a thief who presents a token within the grace
+// after its owner (or before, with the owner retrying) gets a pair too. The
+// two successors then share generation gen+1, so whichever is redeemed second
+// outside the grace of the first still revokes the family: detection is
+// deferred to the next rotation, not lost.
 //
 // A family with no live entry is accepted as new, which is why a restart or
 // an eviction of an active chain reopens a window, unless the revocation set
@@ -322,6 +344,12 @@ func (c *familyCache) use(id string, gen int64, newExp, now time.Time) (reuse bo
 				c.remove(f) // recorded now that there is room
 			}
 			return false, errFamilyRevoked
+		case gen == f.usedGen && retryWindow(f.usedAt, now):
+			if newExp.After(f.exp) {
+				f.exp = newExp
+			}
+			c.active.MoveToFront(f.elem)
+			return false, nil
 		case gen <= f.usedGen:
 			if c.revs.add(h, f.exp, now) {
 				c.remove(f)
@@ -332,7 +360,7 @@ func (c *familyCache) use(id string, gen int64, newExp, now time.Time) (reuse bo
 			}
 			return true, errFamilyRevoked
 		}
-		f.usedGen = gen
+		f.usedGen, f.usedAt = gen, now
 		if newExp.After(f.exp) { // never shorten: older tokens may outlive newExp
 			f.exp = newExp
 		}
@@ -356,8 +384,16 @@ func (c *familyCache) use(id string, gen int64, newExp, now time.Time) (reuse bo
 		c.remove(c.active.Back().Value.(*family))
 		c.evicted++
 	}
-	f = &family{id: id, usedGen: gen, exp: newExp}
+	f = &family{id: id, usedGen: gen, usedAt: now, exp: newExp}
 	f.elem = c.active.PushFront(f)
 	c.seen[id] = f
 	return false, nil
+}
+
+// retryWindow reports whether now is within refreshRetryGrace of usedAt. A
+// clock that stepped back before usedAt is outside it: failing towards
+// revocation keeps reuse detection.
+func retryWindow(usedAt, now time.Time) bool {
+	d := now.Sub(usedAt)
+	return d >= 0 && d < refreshRetryGrace
 }

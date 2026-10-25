@@ -43,14 +43,19 @@ var catalog = map[string]string{
 	"terms.accept":       "I have read and accept the terms of use",
 	msgTermsRequired:     "Accept the terms of use to continue.",
 
-	"session.legend":    "Stay connected for",
-	"session.unlimited": "Until revoked",
+	"session.legend": "Stay connected for",
+	// Nothing can revoke a session (there is no revocation endpoint and no
+	// state), so an unlimited one ends only once its refresh token goes unused
+	// for the idle lifetime (%[1]s, a duration text like "30 days").
+	"session.unlimited": "No fixed end (ends after %[1]s unused)",
 	"session.year":      "%[1]s year",
 	"session.years":     "%[1]s years",
 	"session.day":       "%[1]s day",
 	"session.days":      "%[1]s days",
 	"session.hour":      "%[1]s hour",
 	"session.hours":     "%[1]s hours",
+	"session.minute":    "%[1]s minute",
+	"session.minutes":   "%[1]s minutes",
 	msgSessionRequired:  "Choose how long to stay connected.",
 
 	"page.title":        "Connect Garmin",
@@ -69,7 +74,7 @@ var catalog = map[string]string{
 	"privacy.sealed":      "Your key is sealed into the token and never stored or logged.",
 	"privacy.proxy":       "A TLS reverse proxy in front of this server sees the key while you submit it.",
 	"privacy.third_party": "This server is not affiliated with Garmin and you are giving your Personal API key to a third party.",
-	"privacy.bearer":      "The token is a bearer secret: whoever holds it can use your Garmin data until it expires, and nothing is revoked when you disconnect the connector.",
+	"privacy.bearer":      "The token is a bearer secret: whoever holds it can use your Garmin data until the session ends. This server cannot revoke it: disconnecting the connector changes nothing, and after you revoke the key at Garmin access can continue for up to 24 hours.",
 	"privacy.logs":        "This server logs request metadata only: time, status, client IP address on sign-in attempts and, if the operator turns on debug logging, on every request, plus the tool name; it never logs your key, tokens or Garmin data.",
 	"hint.continue":       "Only continue if you started this connection yourself.",
 
@@ -116,20 +121,29 @@ func text(id string, args ...any) string {
 	return fmt.Sprintf(t, args...)
 }
 
-// sessionLabel is the English radio label of a session choice, derived from its
-// duration: "Until revoked", then years (multiples of 8760h), days (multiples
-// of 24h) and otherwise hours.
-func sessionLabel(c config.SessionChoice) string {
+// sessionLabel is the English radio label of a session choice: its duration
+// (see durationText), or for an unlimited choice the honest "no fixed end"
+// with idle, the refresh token lifetime that still ends it.
+func sessionLabel(c config.SessionChoice, idle time.Duration) string {
 	if c.Unlimited {
-		return text("session.unlimited")
+		return text("session.unlimited", durationText(idle))
 	}
-	n := int64(c.Duration / time.Hour)
-	unit, per := "hour", int64(1)
+	return durationText(c.Duration)
+}
+
+// durationText renders d in English: years (multiples of 8760h), days
+// (multiples of 24h), hours, and minutes (rounded up) when d is not a whole
+// number of hours, which only a configured refresh_token_ttl can be.
+func durationText(d time.Duration) string {
+	n := int64((d + time.Minute - 1) / time.Minute)
+	unit, per := "minute", int64(1)
 	switch {
-	case n%8760 == 0:
-		unit, per = "year", 8760
-	case n%24 == 0:
-		unit, per = "day", 24
+	case n%(8760*60) == 0:
+		unit, per = "year", 8760*60
+	case n%(24*60) == 0:
+		unit, per = "day", 24*60
+	case n%60 == 0:
+		unit, per = "hour", 60
 	}
 	if n /= per; n != 1 {
 		unit += "s"

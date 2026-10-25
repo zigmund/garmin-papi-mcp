@@ -252,9 +252,13 @@ func (s *Handlers) exchangeCode(w http.ResponseWriter, r *http.Request, form url
 // session end: the user's choice when the token carries one, else start +
 // oauth.max_session_ttl) and single-use with reuse
 // detection by family: see familyCache.use. The token is spent before the
-// new pair is sealed, so a sealing failure, or a client that loses the
-// response, leaves a spent token and requires re-authorization; the
-// alternative (claim after issue) would let concurrent requests both succeed.
+// new pair is sealed. Presenting it again within refreshRetryGrace of that
+// (a client retrying after a sealing failure or a lost response, or two of
+// its workers racing) yields another pair and revokes nothing; this is
+// stateless, so the retry cannot be handed the first pair: both successors
+// are valid, and once one of them is rotated the other is spent like any
+// predecessor. After the grace, the same token is a reuse and revokes the
+// family.
 func (s *Handlers) refresh(w http.ResponseWriter, r *http.Request, form url.Values, clientID string) {
 	raw := form.Get("refresh_token")
 	if raw == "" {

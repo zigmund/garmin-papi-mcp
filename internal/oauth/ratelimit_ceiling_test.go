@@ -16,13 +16,14 @@ import (
 )
 
 // newCeiling is newAZ with a global authorize ceiling of burst codes
-// (refilling one per second) and generous per-IP limits, so only the ceiling
-// can refuse. Requests come from the given remote address.
+// (refilling one per second) and generous per-IP and per-network limits, so
+// only the ceiling can refuse. Requests come from the given remote address.
 func newCeiling(t *testing.T, burst int) (*azEnv, *bytes.Buffer) {
 	t.Helper()
 	e := newAZ(t)
 	e.srv.cfg.OAuth.RateLimit = config.RateLimit{
 		Authorize:       config.Limit{PerMinute: 6000, Burst: 1000},
+		KeyRejected:     config.Limit{PerMinute: 6000, Burst: 1000},
 		AuthorizeGlobal: config.Limit{PerMinute: 60, Burst: burst},
 	}
 	e.srv.limits = newLimiters(e.srv.cfg.OAuth.RateLimit, e.srv.cfg.OAuth.CodeTTL, func() time.Time { return e.srv.now() })

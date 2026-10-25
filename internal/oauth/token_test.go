@@ -390,11 +390,16 @@ func TestTokenRefreshChain(t *testing.T) {
 	e.wantOK(t, e.do(e.refreshForm(e.none, g2)))
 }
 
+// pastGrace moves the clock past refreshRetryGrace, so presenting a spent
+// refresh token again is a reuse rather than a retry.
+func (e *tkEnv) pastGrace() { e.now.Add(int64(refreshRetryGrace / time.Second)) }
+
 func TestTokenRefreshReuseRevokesFamily(t *testing.T) {
 	e := newTK(t)
 	_, g0 := e.wantOK(t, e.do(e.codeForm(e.none, e.code(t, e.none, nil))))
 	_, g1 := e.wantOK(t, e.do(e.refreshForm(e.none, g0)))
-	// Replaying G0 after G1 was issued is a reuse ...
+	e.pastGrace()
+	// Replaying G0 after G1 was issued, past the retry grace, is a reuse ...
 	e.wantErr(t, e.do(e.refreshForm(e.none, g0)), 400, "invalid_grant")
 	// ... and revokes the whole family, including the legitimate successor.
 	e.wantErr(t, e.do(e.refreshForm(e.none, g1)), 400, "invalid_grant")
@@ -406,6 +411,7 @@ func TestTokenRefreshFamiliesIndependent(t *testing.T) {
 	_, a0 := e.wantOK(t, e.do(e.codeForm(e.none, e.code(t, e.none, nil))))
 	_, b0 := e.wantOK(t, e.do(e.codeForm(e.none, e.code(t, e.none, nil))))
 	e.wantOK(t, e.do(e.refreshForm(e.none, a0)))
+	e.pastGrace()
 	e.wantErr(t, e.do(e.refreshForm(e.none, a0)), 400, "invalid_grant")
 	e.wantOK(t, e.do(e.refreshForm(e.none, b0)))
 	// a is revoked (kept in the revocation set), b is active.
@@ -465,12 +471,47 @@ func (e *tkEnv) race(n int, form url.Values) (ok, rejected int32) {
 	return okN.Load(), badN.Load()
 }
 
+// Concurrent refreshes of one token (workers of one client) all fall within
+// the retry grace: each gets a pair and the chain stays one family entry.
+// Once the grace is over the token is a reuse for all of them.
 func TestTokenRefreshConcurrent(t *testing.T) {
 	e := newTK(t)
 	_, rt := e.wantOK(t, e.do(e.codeForm(e.none, e.code(t, e.none, nil))))
-	if ok, rejected := e.race(16, e.refreshForm(e.none, rt)); ok != 1 || rejected != 15 {
-		t.Fatalf("ok = %d, rejected = %d", ok, rejected)
+	if ok, rejected := e.race(16, e.refreshForm(e.none, rt)); ok != 16 || rejected != 0 {
+		t.Fatalf("within the grace: ok = %d, rejected = %d", ok, rejected)
 	}
+	if n := len(e.srv.families.seen); n != 1 {
+		t.Fatalf("family entries = %d, want 1", n)
+	}
+	e.pastGrace()
+	if ok, rejected := e.race(16, e.refreshForm(e.none, rt)); ok != 0 || rejected != 16 {
+		t.Fatalf("after the grace: ok = %d, rejected = %d", ok, rejected)
+	}
+}
+
+// A client that lost the response to a refresh (a network timeout) retries
+// with the same token within refreshRetryGrace and gets a new pair; nothing is
+// revoked and the retry's pair keeps the chain going. The lost twin presented
+// after the grace is a reuse: the family, the retry's chain included, is
+// revoked.
+func TestTokenRefreshRetryWithinGrace(t *testing.T) {
+	e := newTK(t)
+	_, g0 := e.wantOK(t, e.do(e.codeForm(e.none, e.code(t, e.none, nil))))
+	_, lost := e.wantOK(t, e.do(e.refreshForm(e.none, g0))) // the response that never arrived
+	e.now.Add(int64(refreshRetryGrace/time.Second) - 1)
+	_, g1 := e.wantOK(t, e.do(e.refreshForm(e.none, g0)))
+	if lost == g1 {
+		t.Fatal("the retry got the same token")
+	}
+	f0, _ := e.chainRefresh(t, g0)
+	if f1, n1 := e.chainRefresh(t, g1); f1 != f0 || n1 != 1 {
+		t.Fatalf("retry pair = (%s, %d), want (%s, 1)", f1, n1, f0)
+	}
+	e.now.Add(3600)
+	_, g2 := e.wantOK(t, e.do(e.refreshForm(e.none, g1)))
+	e.pastGrace()
+	e.wantErr(t, e.do(e.refreshForm(e.none, lost)), 400, "invalid_grant")
+	e.wantErr(t, e.do(e.refreshForm(e.none, g2)), 400, "invalid_grant")
 }
 
 func TestTokenRefreshCacheOverflow(t *testing.T) {
@@ -649,10 +690,10 @@ func TestFamilyCacheBoundary(t *testing.T) {
 	if _, err := c.use("g", 0, exp.Add(time.Hour), exp); err != nil {
 		t.Fatalf("at exp: err = %v", err)
 	}
-	if reuse, err := c.use("g", 0, exp.Add(time.Hour), exp); !reuse || err != errFamilyRevoked {
+	if reuse, err := c.use("g", 0, exp.Add(time.Hour), exp.Add(refreshRetryGrace)); !reuse || err != errFamilyRevoked {
 		t.Fatalf("reuse = %v, err = %v", reuse, err)
 	}
-	if reuse, err := c.use("g", 5, exp.Add(time.Hour), exp); reuse || err != errFamilyRevoked {
+	if reuse, err := c.use("g", 5, exp.Add(time.Hour), exp.Add(refreshRetryGrace)); reuse || err != errFamilyRevoked {
 		t.Fatalf("revoked: reuse = %v, err = %v", reuse, err)
 	}
 }
@@ -889,6 +930,7 @@ func TestTokenSessionLegacyReplayRevokes(t *testing.T) {
 		Family: "legacy-replay", Exp: now + 3600,
 	})
 	_, rt := e.wantOK(t, e.do(e.refreshForm(e.none, legacy)))
+	e.pastGrace()
 	e.wantErr(t, e.do(e.refreshForm(e.none, legacy)), 400, "invalid_grant")
 	// Reuse revoked the whole family, including the migrated chain.
 	e.wantErr(t, e.do(e.refreshForm(e.none, rt)), 400, "invalid_grant")

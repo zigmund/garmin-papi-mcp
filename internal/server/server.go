@@ -32,6 +32,14 @@ const (
 	// headers (slowloris protection). It does not limit body or response.
 	ReadHeaderTimeout = 10 * time.Second
 
+	// ReadTimeout bounds reading a whole request, headers and body, on every
+	// path. Without it a body nobody reads (the 401, 404 or 415 of /mcp,
+	// answered before the body is touched, which net/http then drains, up to
+	// 256 KiB, before writing the response) could be stalled forever.
+	// Handlers may set a tighter deadline (withOAuthReadDeadline) or rearm it
+	// for the body they read (readBody).
+	ReadTimeout = 30 * time.Second
+
 	// IdleTimeout closes keep-alive connections that sit idle. It is above
 	// nginx's default upstream keepalive timeout (60s) so nginx, not this
 	// server, decides when to drop a reused connection.
@@ -42,22 +50,45 @@ const (
 	// headers while staying well below the 1 MiB net/http default.
 	MaxHeaderBytes = 64 << 10
 
-	// ShutdownTimeout is how long graceful shutdown waits for in-flight
-	// requests; after it the remaining connections are closed forcibly.
-	ShutdownTimeout = 15 * time.Second
+	// ShutdownDrain is how long graceful shutdown lets in-flight requests run
+	// undisturbed: long enough for a Garmin request at the default
+	// garmin.timeout. The requests still running after it are cancelled
+	// (errShuttingDown): a tool call waiting on Garmin then ends with a tool
+	// error, which is still written to the client. It is fixed, not derived
+	// from garmin.timeout, so the unit's TimeoutStopSec can rely on it.
+	ShutdownDrain = config.DefaultGarminTimeout
+
+	// ShutdownGrace is how long the cancelled requests get to write their
+	// responses; after it the remaining connections are closed forcibly.
+	ShutdownGrace = 5 * time.Second
+
+	// ShutdownTimeout bounds the whole graceful shutdown. The systemd unit's
+	// TimeoutStopSec must stay above it.
+	ShutdownTimeout = ShutdownDrain + ShutdownGrace
 )
 
-// There is deliberately no ReadTimeout and no WriteTimeout: both are absolute
-// deadlines on the whole request/response and would cut slow tool calls (a
-// tool may make several Garmin requests, each bounded by garmin.timeout). The
-// OAuth and well-known routes get a per-request read deadline instead
-// (withOAuthReadDeadline).
+// ReadTimeout does not cut slow tool calls. It is the read deadline of the
+// connection, and it no longer applies once the body has been read: HTTP/1.1
+// clears the deadline when the body reaches EOF (the background read that
+// watches for a client hang-up starts then), and HTTP/2 applies it as a
+// per-stream timer that only fails further body reads, never resetting the
+// stream. Writing the response is not affected. There is deliberately no
+// WriteTimeout: it is an absolute deadline on the response and would cut slow
+// tool calls (a tool may make several Garmin requests, each bounded by
+// garmin.timeout).
+
+// errShuttingDown is the cancellation cause of the requests still running
+// when ShutdownDrain has passed.
+var errShuttingDown = errors.New("server shutting down")
 
 // Server is the assembled HTTP service.
 type Server struct {
-	http            *http.Server
-	log             *slog.Logger
-	shutdownTimeout time.Duration
+	http          *http.Server
+	log           *slog.Logger
+	shutdownDrain time.Duration
+	shutdownGrace time.Duration
+	// cancelRequests cancels the base context of every request (shutdown).
+	cancelRequests context.CancelCauseFunc
 
 	mu      sync.Mutex
 	reloads []reloadHook
@@ -82,18 +113,23 @@ func newServer(cfg *config.Config, s *seal.Sealer, g *garmin.Client, log *slog.L
 	if err != nil {
 		return nil, err
 	}
+	base, cancel := context.WithCancelCause(context.Background())
 	return &Server{
 		http: &http.Server{
 			Handler:           h,
 			ReadHeaderTimeout: ReadHeaderTimeout,
+			ReadTimeout:       ReadTimeout,
 			IdleTimeout:       IdleTimeout,
 			MaxHeaderBytes:    MaxHeaderBytes,
 			// net/http logs recovered handler panics with their value and
 			// stack; the sanitizer keeps only the fact.
-			ErrorLog: newErrorLog(log),
+			ErrorLog:    newErrorLog(log),
+			BaseContext: func(net.Listener) context.Context { return base },
 		},
-		log:             log,
-		shutdownTimeout: ShutdownTimeout,
+		log:            log,
+		shutdownDrain:  ShutdownDrain,
+		shutdownGrace:  ShutdownGrace,
+		cancelRequests: cancel,
 	}, nil
 }
 
@@ -214,8 +250,9 @@ func (s *Server) EnableTLS(cfg *tls.Config) {
 }
 
 // Serve accepts connections on ln until ctx is cancelled, then shuts down
-// gracefully. If in-flight requests outlive the shutdown timeout, remaining
-// connections are closed and Serve still returns nil.
+// gracefully: in-flight requests get ShutdownDrain to finish, then those
+// still running are cancelled and get ShutdownGrace to answer; after that the
+// remaining connections are closed and Serve still returns nil.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	errc := make(chan error, 1)
 	go func() {
@@ -235,9 +272,17 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	case <-ctx.Done():
 	}
 
-	s.log.Info("shutting down", "timeout", s.shutdownTimeout.String())
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.shutdownTimeout)
+	timeout := s.shutdownDrain + s.shutdownGrace
+	s.log.Info("shutting down", "timeout", timeout.String())
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
+	// Rather than cut a tool call still waiting on Garmin, cancel it once the
+	// drain period is over: it then answers with a tool error in time.
+	drained := time.AfterFunc(s.shutdownDrain, func() {
+		s.log.Warn("requests outlived the shutdown drain period, cancelling them")
+		s.cancelRequests(errShuttingDown)
+	})
+	defer drained.Stop()
 	if err := s.http.Shutdown(sctx); err != nil {
 		s.log.Warn("graceful shutdown timed out, closing connections", "error", err)
 		if cerr := s.http.Close(); cerr != nil {

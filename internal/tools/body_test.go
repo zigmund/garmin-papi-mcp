@@ -23,7 +23,9 @@ func TestGetWeightQueryAndPaths(t *testing.T) {
 		t.Fatalf("call1 %+v", g.calls[1])
 	}
 	g = newFakeB(routes)
-	runB(t, "get_weight", g, `{"start_date":"2026-01-01","end_date":"2026-01-31","include_all":true}`)
+	if _, err := runB(t, "get_weight", g, `{"start_date":"2026-01-01","end_date":"2026-01-31","include_all":true}`); err != nil {
+		t.Fatal(err)
+	}
 	if g.calls[0].query.Get("includeAll") != "true" {
 		t.Fatalf("include_all: %v", g.calls[0].query)
 	}
