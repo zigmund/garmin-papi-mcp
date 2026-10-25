@@ -2,7 +2,3 @@ title = "garmin-papi-mcp gitleaks config"
 
 [extend]
 useDefault = true
-
-[allowlist]
-description = "Documentation placeholders"
-regexes = ['''(?i)(example|placeholder|changeme|xxxx+)''']
