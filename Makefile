@@ -5,13 +5,18 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .DEFAULT_GOAL := build
-.PHONY: build test vet lint fmt clean
+.PHONY: build test live-test vet lint fmt clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY) $(CMD)
 
 test:
 	go test -race ./...
+
+# Opt-in: runs every tool against the real Garmin API with the key in
+# test/api.key (or GARMIN_API_KEY_FILE). Prints names, outcomes and sizes only.
+live-test:
+	GARMIN_LIVE=1 go test -count=1 -v -run Live ./internal/e2e/
 
 vet:
 	go vet ./...
