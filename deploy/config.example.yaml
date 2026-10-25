@@ -47,8 +47,9 @@ oauth:
   # for"). Up to 8 entries, each a whole number of hours of at least 1h (Go
   # durations have no d unit) or "unlimited" (no absolute end; refresh_token_ttl
   # still applies). The choice then replaces max_session_ttl for new logins.
-  # session_choices: [720h, 2160h, 8760h, unlimited]
-  # session_default: 2160h  # one of the choices; the first when unset
+  # Add "unlimited" to offer a session without an absolute end.
+  session_choices: [720h, 2160h, 8760h]
+  session_default: 2160h  # one of the choices; the first when unset
   code_ttl: 5m  # at most 10m
   allowed_redirect_uris:
     - https://claude.ai/api/mcp/auth_callback

@@ -38,11 +38,12 @@ A missing, invalid or expired bearer token, or a Personal API key that Garmin re
 
 ## Tool call
 
-1. Per-IP limit, body cap, then the bearer token is opened (AES-256-GCM); it yields the Personal API key and the session limits.
-2. Per-grant limits (a grant is one key, shared by all OAuth clients).
-3. The tool validates its arguments (date format, range length) and calls one or two Garmin endpoints.
-4. The Garmin client uses the cached JWT for the key (hash of the key), or exchanges the key for a new one (24 h lifetime, refreshed shortly before expiry). On a Garmin 401 it drops the JWT, exchanges once more and retries once. A 401 from that exchange means the key is rejected (see above); a data endpoint that still answers 401 with the fresh JWT (for example one the key has no access to) only fails that tool call, with the tool error "Garmin returned HTTP 401", and the key stays usable for the other tools.
-5. The result is shaped for the model: large series downsampled with min/max/mean kept, empty results as "no data", partial failures reported next to the part that succeeded.
+1. `Origin` check, then the per-IP limit, then the bearer token is opened (AES-256-GCM); it yields the Personal API key. A missing, invalid or rejected token is refused here, with the per-IP charge kept.
+2. Body cap and encoding check, then the body is read (under a deadline). Once it is in, the per-IP charge is given back: authenticated traffic is governed by the per-grant limits only.
+3. Per-grant limits (a grant is one key, shared by all OAuth clients): rate, concurrency, then the global in-flight cap.
+4. The tool validates its arguments (date format, range length) and calls one or two Garmin endpoints.
+5. The Garmin client uses the cached JWT for the key (hash of the key), or exchanges the key for a new one (24 h lifetime, refreshed shortly before expiry). On a Garmin 401 it drops the JWT, exchanges once more and retries once. A 401 from that exchange means the key is rejected (see above); a data endpoint that still answers 401 with the fresh JWT (for example one the key has no access to) only fails that tool call, with the tool error "Garmin returned HTTP 401", and the key stays usable for the other tools.
+6. The result is shaped for the model: large series downsampled with min/max/mean kept, empty results as "no data", partial failures reported next to the part that succeeded.
 
 ## State
 

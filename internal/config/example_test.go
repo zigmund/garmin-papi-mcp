@@ -57,6 +57,14 @@ func TestExampleConfigLoads(t *testing.T) {
 	if len(cfg.OAuth.AllowedRedirectURIs) != len(DefaultRedirectURIs()) {
 		t.Errorf("redirect URIs = %v", cfg.OAuth.AllowedRedirectURIs)
 	}
+	// The example offers the session choice the README describes.
+	var choices []string
+	for _, c := range cfg.OAuth.Sessions {
+		choices = append(choices, c.String())
+	}
+	if strings.Join(choices, ",") != "720h,2160h,8760h" || cfg.OAuth.DefaultSession.String() != "2160h" {
+		t.Errorf("session choices = %v (default %s), want 720h,2160h,8760h (default 2160h)", choices, cfg.OAuth.DefaultSession)
+	}
 }
 
 // The example must stay strict-decodable: an unknown key is rejected.

@@ -85,8 +85,9 @@ If Garmin rejects the key (expired or revoked), the form shows an error. When a 
 Requirements: a Linux host with systemd, a DNS name, a TLS-terminating reverse proxy (for example nginx) in front of `127.0.0.1:8788`, or the built-in TLS (`tls.*`). For nginx, use the vhost in [docs/configuration.md, Reverse proxy](docs/configuration.md#reverse-proxy): it must overwrite `X-Forwarded-For` and `X-Real-IP`, or clients can get around the per-IP limits.
 
 ```sh
-# 1. Install the binary (from a release archive, or `make build`).
-install -m 0755 garmin-papi-mcp /usr/local/bin/garmin-papi-mcp
+# 1. Install the binary: `make build` writes bin/garmin-papi-mcp. From a release
+#    archive, use the garmin-papi-mcp in its unpacked directory instead.
+install -m 0755 bin/garmin-papi-mcp /usr/local/bin/garmin-papi-mcp
 
 # 2. Config and token encryption key (root-only; the unit hands a private copy to the service).
 install -d -m 0755 /etc/garmin-papi-mcp
