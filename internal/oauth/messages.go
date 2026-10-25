@@ -70,7 +70,7 @@ var catalog = map[string]string{
 	"privacy.proxy":       "A TLS reverse proxy in front of this server sees the key while you submit it.",
 	"privacy.third_party": "This server is not affiliated with Garmin and you are giving your Personal API key to a third party.",
 	"privacy.bearer":      "The token is a bearer secret: whoever holds it can use your Garmin data until it expires, and nothing is revoked when you disconnect the connector.",
-	"privacy.logs":        "This server logs request metadata only (time, client IP address on sign-in attempts, status); it never logs your key, tokens, or Garmin data.",
+	"privacy.logs":        "This server logs request metadata only: time, status, client IP address on sign-in attempts and, if the operator turns on debug logging, on every request, plus the tool name; it never logs your key, tokens or Garmin data.",
 	"hint.continue":       "Only continue if you started this connection yourself.",
 
 	"button.authorize": "Authorize",

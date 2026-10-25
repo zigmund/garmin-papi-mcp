@@ -65,8 +65,7 @@ func TestDebugRecordAttrs(t *testing.T) {
 	r := recs[0]
 	want := map[string]any{
 		"level": "DEBUG", "msg": "http request", "method": "POST", "path": "/mcp/foo",
-		"status": float64(418), "bytes": float64(5), "remote": "203.0.113.7",
-		"user_agent": "test-agent/1", "proto": "HTTP/1.1",
+		"status": float64(418), "remote": "203.0.113.7",
 	}
 	for k, v := range want {
 		if r[k] != v {
@@ -76,7 +75,16 @@ func TestDebugRecordAttrs(t *testing.T) {
 	if _, ok := r["duration"]; !ok {
 		t.Error("duration missing")
 	}
-	for _, s := range []string{"SECRET", "S2", "TOPSECRET", "COOKIESECRET", "body-secret", "?"} {
+	// Nothing beyond method, path, status, duration and client IP (plus the
+	// handler's annotations): no user agent, protocol or byte count.
+	for k := range r {
+		switch k {
+		case "time", "level", "msg", "method", "path", "status", "duration", "remote":
+		default:
+			t.Errorf("unexpected attribute %q", k)
+		}
+	}
+	for _, s := range []string{"SECRET", "S2", "TOPSECRET", "COOKIESECRET", "body-secret", "?", "test-agent"} {
 		if strings.Contains(buf.String(), s) {
 			t.Errorf("output leaks %q: %s", s, buf)
 		}
@@ -91,8 +99,8 @@ func TestDefaultStatus200(t *testing.T) {
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
 	r := records(t, buf)[0]
-	if r["status"] != float64(200) || r["bytes"] != float64(5) {
-		t.Fatalf("status/bytes = %v/%v", r["status"], r["bytes"])
+	if r["status"] != float64(200) {
+		t.Fatalf("status = %v", r["status"])
 	}
 }
 
@@ -100,8 +108,8 @@ func TestNoWriteDefaultsTo200(t *testing.T) {
 	log, buf := newLogger(slog.LevelDebug)
 	h := Middleware(log, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
-	if r := records(t, buf)[0]; r["status"] != float64(200) || r["bytes"] != float64(0) {
-		t.Fatalf("status/bytes = %v/%v", r["status"], r["bytes"])
+	if r := records(t, buf)[0]; r["status"] != float64(200) {
+		t.Fatalf("status = %v", r["status"])
 	}
 }
 
@@ -260,15 +268,15 @@ func TestInvalidStatusPanicNotRecorded(t *testing.T) {
 	}
 }
 
-func TestBytesAcrossFlush(t *testing.T) {
+func TestStatusAcrossFlush(t *testing.T) {
 	r, _ := serve(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("abc"))
 		w.(http.Flusher).Flush()
 		_, _ = w.Write([]byte("defg"))
 		w.(http.Flusher).Flush()
 	}, httptest.NewRequest("GET", "/", nil))
-	if r["bytes"] != float64(7) || r["status"] != float64(200) {
-		t.Fatalf("bytes/status = %v/%v", r["bytes"], r["status"])
+	if r["status"] != float64(200) {
+		t.Fatalf("status = %v", r["status"])
 	}
 }
 
