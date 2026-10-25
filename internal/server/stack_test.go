@@ -102,6 +102,11 @@ func (f *fakeGarmin) serve(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.keyAuth = append(f.keyAuth, r.Header.Get("Authorization"))
 		f.mu.Unlock()
+		// Mimic the real endpoint: it serves text/plain only.
+		if acc := r.Header.Get("Accept"); acc != "" && !strings.Contains(acc, "text/plain") && !strings.Contains(acc, "*/*") {
+			w.WriteHeader(http.StatusNotAcceptable)
+			return
+		}
 		if r.Method != http.MethodPost || f.reject.Load() || r.Header.Get("Authorization") != "ApiKey "+testAPIKey {
 			w.WriteHeader(http.StatusUnauthorized)
 			return

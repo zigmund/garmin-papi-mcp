@@ -65,7 +65,7 @@ func TestConfigDefaults(t *testing.T) {
 		{"ip burst", cfg.Limits.IP.Burst, 60},
 		{"token per minute", cfg.Limits.Token.PerMinute, 60},
 		{"token burst", cfg.Limits.Token.Burst, 20},
-		{"concurrent per token", cfg.Limits.MaxConcurrentPerToken, 8},
+		{"concurrent per token", cfg.Limits.MaxConcurrentPerToken, 16},
 		{"mcp path", MCPPath, "/mcp"},
 		{"tls enabled", cfg.TLSEnabled(), false},
 		{"reload", cfg.TLS.ReloadInterval, time.Duration(0)},

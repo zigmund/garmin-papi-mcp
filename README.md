@@ -117,6 +117,18 @@ Optional: write your own terms of use (see `deploy/terms.example.txt`, which is 
 - **Read-only.** Every tool is annotated read-only and only issues GET requests to Garmin.
 - **Hygiene.** This repository contains no real keys, tokens or user data; CI scans for secrets with gitleaks and blocks credentials and local agent files from being tracked.
 
+## Testing
+
+`make test` runs everything offline: unit tests plus `internal/e2e`, which drives the full OAuth flow and all 17 tools over HTTP against a fake Garmin and checks tool output sizes and range limits. It never touches the network or `test/api.key`.
+
+Live tests against Garmin are opt-in. With your own Personal API key in `test/api.key` (git-ignored; override the path with `GARMIN_API_KEY_FILE`):
+
+```sh
+make live-test   # GARMIN_LIVE=1 go test ./internal/e2e/ -run Live -v
+```
+
+It calls every tool against the real API and prints only the tool name, an outcome (ok, no-data, tool-error) and the result size, never payloads, keys or tokens. Without `GARMIN_LIVE=1` or the key file it skips.
+
 ## Development
 
 ```sh
@@ -125,4 +137,4 @@ make test    # go test -race ./...
 make vet
 ```
 
-Live tests against Garmin are opt-in and skip when no credentials are present. Releases: [docs/releasing.md](docs/releasing.md). License: see [LICENSE](LICENSE).
+Releases: [docs/releasing.md](docs/releasing.md). License: see [LICENSE](LICENSE).

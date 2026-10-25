@@ -72,7 +72,7 @@ Zero or unset means the default; `-1` disables a single limit; `limits.disabled:
 | --- | --- | --- |
 | `limits.ip.per_minute` / `burst` | 300 / 60 | Per client IP, before the token is opened |
 | `limits.token.per_minute` / `burst` | 60 / 20 | Per grant (one Personal API key, shared by all OAuth clients) |
-| `limits.max_concurrent_per_token` | `8` | In-flight requests per grant |
+| `limits.max_concurrent_per_token` | `16` | In-flight requests per grant |
 | `limits.max_in_flight` | `1024` | In-flight requests overall; beyond it 503 |
 | `limits.max_request_body` | `10485760` | Request body cap in bytes (413 beyond), at least 1024; cannot be disabled. The effective cap is at most 1 MiB, the largest JSON-RPC message the MCP handler accepts |
 | `limits.disabled` | `false` | Turns off all limits above except the body cap |
