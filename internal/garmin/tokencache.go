@@ -34,6 +34,9 @@ type flight struct {
 	done chan struct{}
 	jwt  string
 	err  error
+	// leaderCtxDone is set when the leader failed while its own context was
+	// done; only then may followers retry instead of sharing the error.
+	leaderCtxDone bool
 }
 
 // tokenCache is a bounded JWT cache with per-key single-flight exchange.
@@ -116,8 +119,8 @@ func (c *tokenCache) get(ctx context.Context, key string, force bool, now func()
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
-			// The leader may have failed only because its own context ended; retry.
-			if isCtxErr(f.err) {
+			// The leader failed only because its own context ended; retry.
+			if f.leaderCtxDone {
 				force = false
 				continue
 			}
@@ -127,19 +130,34 @@ func (c *tokenCache) get(ctx context.Context, key string, force bool, now func()
 		c.inflight[key] = f
 		c.mu.Unlock()
 
-		jwt, err := exchange(ctx)
+		return c.lead(ctx, key, f, now, exchange)
+	}
+}
 
+// lead runs the exchange as the flight leader and always releases the flight,
+// even if exchange panics (the panic is re-raised after release).
+func (c *tokenCache) lead(ctx context.Context, key string, f *flight, now func() time.Time,
+	exchange func(context.Context) (string, error)) (jwt string, err error) {
+	finished := false
+	defer func() {
 		c.mu.Lock()
 		delete(c.inflight, key)
-		if err == nil {
-			t := now()
-			c.putLocked(key, jwt, jwtExpiry(jwt, t), t)
+		if !finished {
+			f.err = errExchangeAborted
+		} else {
+			f.jwt, f.err = jwt, err
+			f.leaderCtxDone = err != nil && ctx.Err() != nil
+			if err == nil {
+				t := now()
+				c.putLocked(key, jwt, jwtExpiry(jwt, t), t)
+			}
 		}
-		f.jwt, f.err = jwt, err
 		c.mu.Unlock()
 		close(f.done)
-		return jwt, err
-	}
+	}()
+	jwt, err = exchange(ctx)
+	finished = true
+	return jwt, err
 }
 
 // jwtExpiry reads the exp claim from the JWT payload, falling back to now+23h.
@@ -162,6 +180,4 @@ func jwtExpiry(jwt string, now time.Time) time.Time {
 	return time.Unix(int64(claims.Exp), 0)
 }
 
-func isCtxErr(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-}
+var errExchangeAborted = errors.New("garmin: token exchange aborted")
