@@ -24,7 +24,9 @@ secrets:
   # Token encryption keys live in a file with one base64 (standard) key of
   # exactly 32 random bytes per line; '#' comments and blank lines are ignored.
   # Generate a key with: openssl rand -base64 32
-  # The first key encrypts; the rest only decrypt (key rotation).
+  # The first key encrypts; the rest only decrypt (key rotation). Keys are read
+  # only at startup: restart (not reload) after changing them. Adding a key
+  # invalidates nothing; removing a key invalidates the tokens sealed under it.
   # Known-weak keys (all-zero, repeated-byte or incrementing patterns) are
   # rejected at startup.
   # This path is where the bundled systemd unit (LoadCredential=keys:...)

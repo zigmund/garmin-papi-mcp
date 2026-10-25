@@ -29,6 +29,8 @@ Set exactly one of the two keys.
 
 Generate a key with `openssl rand -base64 32`. Known-weak keys (all-zero, repeated-byte, incrementing patterns) and duplicates are rejected.
 
+The keys are read only at startup: restart the service after changing them (SIGHUP, `systemctl reload`, reloads only the TLS certificate). Adding a new first key starts sealing new tokens with it and invalidates nothing, because the older keys still decrypt. Tokens sealed under a key stop working only once that key is removed and the service restarted; removing every old key signs everyone out.
+
 ## `oauth`
 
 | Key | Default | Description |
