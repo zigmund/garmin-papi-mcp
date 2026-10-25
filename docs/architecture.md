@@ -34,6 +34,8 @@ garmin-papi-mcp is one Go binary that is both an OAuth 2.1 authorization server 
 
 A missing, invalid or expired bearer token, or a Personal API key that Garmin rejects (its key-to-JWT exchange answers 401), gives `401` with a `WWW-Authenticate` challenge so the client re-runs OAuth. A rejected key is remembered (by a MAC, in memory) until the access token lifetime has passed or the user signs in again with a working key: until then its tokens get `401` without another Garmin call and the refresh grant answers `invalid_grant`.
 
+`POST /mcp` also checks the `Origin` header (DNS-rebinding protection for browsers): a request without one is accepted; a request with exactly one is accepted only when it is a bare origin equal to the origin of `public_url` or to the origin (scheme, host and port) of an entry of `oauth.allowed_redirect_uris`, because the backends of the platforms this server redirects to (claude.ai, claude.com, ChatGPT by default) may send their own `Origin`. Anything else (another origin, `null`, userinfo, a path, query or fragment, several `Origin` lines) gets `403`. Authentication is by bearer token only, never cookies.
+
 ## Tool call
 
 1. Per-IP limit, body cap, then the bearer token is opened (AES-256-GCM); it yields the Personal API key and the session limits.

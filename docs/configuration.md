@@ -39,7 +39,7 @@ Generate a key with `openssl rand -base64 32`. Known-weak keys (all-zero, repeat
 | `oauth.code_ttl` | `5m` | Authorization code lifetime, at most `10m` |
 | `oauth.session_choices` | none | "Stay connected for" choices on the form: up to 8 entries, each a whole number of hours of at least `1h`, or `unlimited` (no absolute end; `refresh_token_ttl` still applies). Replaces `max_session_ttl` for new logins |
 | `oauth.session_default` | first choice | One of the choices, pre-selected. Requires `session_choices` |
-| `oauth.allowed_redirect_uris` | claude.ai, claude.com and ChatGPT callbacks | Exact-match allow-list: `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`, `https://chatgpt.com/connector_platform_oauth_redirect` |
+| `oauth.allowed_redirect_uris` | claude.ai, claude.com and ChatGPT callbacks | Exact-match allow-list: `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`, `https://chatgpt.com/connector_platform_oauth_redirect`. The origin (scheme, host and port) of each entry is also an accepted `Origin` on `/mcp`, next to the origin of `public_url`; any other `Origin` is refused with 403 (a request without `Origin` is accepted) |
 
 ### `oauth.page`
 

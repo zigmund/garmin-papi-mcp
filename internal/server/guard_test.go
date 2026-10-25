@@ -304,3 +304,50 @@ func limitsConfig(t *testing.T, extra string) config.ProxyLimits {
 	}
 	return cfg.Limits
 }
+
+// Final-review item 2: the platform backends that call /mcp on the user's
+// behalf may send their own Origin. An Origin equal to the origin of any
+// allow-listed redirect URI (the defaults: claude.ai, claude.com, chatgpt.com)
+// is accepted; anything else still is not.
+func TestMCPOriginOfRedirectURIsAccepted(t *testing.T) {
+	s := newStack(t, stackOpts{})
+	l := s.login(t)
+	for _, origin := range []string{
+		"https://claude.ai", "https://claude.com", "https://chatgpt.com",
+		"HTTPS://Claude.AI", "https://chatgpt.com:443", "https://claude.ai/",
+	} {
+		if resp, _ := s.rpc(t, l.access, initializeBody, "Origin", origin); resp.StatusCode != http.StatusOK {
+			t.Errorf("Origin %q = %d, want 200", origin, resp.StatusCode)
+		}
+	}
+	for _, origin := range []string{
+		"http://claude.ai",                // other scheme
+		"https://claude.ai:8443",          // other port
+		"https://claude.ai.evil.example",  // suffix
+		"https://evil.claude.ai",          // subdomain
+		"https://claude.ai/api/mcp",       // a path is not an origin
+		"https://claude.ai?x=1",           // query
+		"https://user@claude.ai",          // userinfo
+		"https://chatgpt.com#f",           // fragment
+		"https://claude.ai, https://x.io", // a list
+	} {
+		if resp, _ := s.rpc(t, l.access, initializeBody, "Origin", origin); resp.StatusCode != http.StatusForbidden {
+			t.Errorf("Origin %q = %d, want 403", origin, resp.StatusCode)
+		}
+	}
+
+	// The set follows the configured allow-list, not the defaults.
+	s2 := newStack(t, stackOpts{yaml: "oauth: { allowed_redirect_uris: [\"" + testRedirect + "\", \"http://localhost:53682/callback\"] }\n"})
+	l2 := s2.login(t)
+	for origin, want := range map[string]int{
+		"http://localhost:53682": http.StatusOK,
+		"https://claude.ai":      http.StatusOK,
+		"https://chatgpt.com":    http.StatusForbidden,
+		"http://localhost:53683": http.StatusForbidden,
+		s2.url:                   http.StatusOK,
+	} {
+		if resp, _ := s2.rpc(t, l2.access, initializeBody, "Origin", origin); resp.StatusCode != want {
+			t.Errorf("configured allow-list: Origin %q = %d, want %d", origin, resp.StatusCode, want)
+		}
+	}
+}
