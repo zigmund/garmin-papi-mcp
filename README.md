@@ -80,6 +80,36 @@ An empty result is reported as "no data for this period", not as an error. A Gar
 
 If Garmin rejects the key (expired or revoked), the form shows an error. When a key stops working later, the server answers 401 and the client asks you to log in again. That is not immediate: after a key expires or is revoked at Garmin, calls can keep working until the Garmin session the server cached for it expires (up to 24 hours).
 
+### Make the assistant use it
+
+Clients do not always call a connector on their own. To make it the default for health and training questions, send this once in a chat where the connector is enabled (or put it in your profile instructions):
+
+```text
+Remember this in your global memory:
+
+I have a Garmin MCP connector (Garmin Connect Personal API, read-only). When I ask
+about my health, sleep, training or how I feel, get the data from this connector
+first; do not answer from general knowledge and do not ask me to send the data.
+
+Use it for:
+- sleep, heart rate and resting heart rate, HRV, Body Battery, stress, steps, SpO2,
+  the daily summary;
+- workouts and activities (running, cycling, swimming and so on), training load,
+  recovery, fitness age;
+- weight and body composition, nutrition, hydration, menstrual cycle;
+- questions like "how did I sleep", "am I ready to train", "why am I tired",
+  "how was my week", "compare with last month".
+
+Rules:
+- Default period: today or the last 7 days. If I name a period, use it.
+- If there is no data for a day, say so; never make up numbers.
+- If the connector is unavailable or the key is rejected, say so plainly and suggest
+  reconnecting the connector.
+- Lead with the numbers: key values first, then the conclusion.
+```
+
+On claude.ai memory works only with Settings -> Capabilities -> Memory turned on; the text is more reliable in Settings -> Profile ("What personal preferences should Claude consider"), which applies to every chat. On ChatGPT, check that the entry appeared under Settings -> Personalization -> Memory.
+
 ## Run your own
 
 Requirements: a Linux host with systemd, a DNS name, a TLS-terminating reverse proxy (for example nginx) in front of `127.0.0.1:8788`, or the built-in TLS (`tls.*`). For nginx, use the vhost in [docs/configuration.md, Reverse proxy](docs/configuration.md#reverse-proxy): it must overwrite `X-Forwarded-For` and `X-Real-IP`, or clients can get around the per-IP limits.
