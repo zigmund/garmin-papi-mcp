@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{T "page.title"}}</title>
+<style>{{.CSS}}</style>
+</head>
+<body>
+<main>
+<div class="req">
+<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9.5 12l2 2 3.5-4"/></svg>
+<h1><span class="host">{{.RedirectHost}}</span> {{T "page.request_tail"}}</h1>
+</div>
+<p class="meta">{{T "client.name"}} <b>{{if .ClientName}}{{.ClientName}}{{else}}{{T "client.unnamed"}}{{end}}</b> <span class="tag">{{T "client.unverified"}}</span></p>
+{{if .Error.ID}}<div class="err" role="alert" id="err"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg><p>{{Msg .Error}}</p></div>
+{{end}}<form method="post" action="{{.Action}}" autocomplete="off">
+<input type="hidden" name="request" value="{{.Request}}">
+<label for="key">{{T "key.label"}}</label>
+<input id="key" name="{{.KeyField}}" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+<p class="hint">{{T "key.hint"}}</p>
+{{with .Session}}<fieldset class="choices{{if .Invalid}} bad{{end}}" role="radiogroup"{{if .Invalid}} aria-invalid="true" aria-describedby="err"{{end}}>
+<legend>{{T "session.legend"}}</legend>
+{{range .Options}}<label class="radio"><input type="radio" name="{{$.Session.Field}}" value="{{.Value}}"{{if .Checked}} checked{{end}}><span>{{.Label}}</span></label>
+{{end}}</fieldset>
+{{end}}{{if or .Notice .ContactHref}}<section class="notice" aria-labelledby="notice-h">
+<h2 id="notice-h">{{T "notice.heading"}}</h2>
+{{range .Notice}}<p>{{.}}</p>
+{{end}}{{if .ContactHref}}<p>{{T "notice.contact"}} <a href="{{.ContactHref}}">{{.Contact}}</a></p>
+{{end}}</section>
+{{end}}{{with .Terms}}<details class="terms">
+<summary>{{T "terms.summary"}}</summary>
+<div class="terms-body" tabindex="0" role="region" aria-label="{{T "terms.region_label"}}">
+{{range .Paragraphs}}<p>{{.}}</p>
+{{end}}</div>
+</details>
+{{end}}<ul class="privacy">
+<li>{{T "privacy.sealed"}}</li>
+<li>{{T "privacy.proxy"}}</li>
+<li>{{T "privacy.third_party"}}</li>
+</ul>
+<p class="hint">{{T "hint.continue"}}</p>
+{{if .Terms}}<label class="check{{if .TermsInvalid}} bad{{end}}"><input type="checkbox" name="accept_terms" value="on" required{{if .TermsInvalid}} aria-invalid="true" aria-describedby="err"{{end}}><span>{{T "terms.accept"}}</span></label>
+{{end}}<button type="submit">{{T "button.authorize"}}</button>
+</form>
+</main>
+</body>
+</html>
