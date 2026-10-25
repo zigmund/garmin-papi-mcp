@@ -18,15 +18,17 @@ import (
 const exchangePath = "/personalapitoken-service/personal-api/personal-api-key/token"
 
 type fakeGarmin struct {
-	srv       *httptest.Server
-	exchanges atomic.Int32
-	dataCalls atomic.Int32
-	mu        sync.Mutex
-	tokenFn   func(n int) string                                  // token body for nth exchange (1-based)
-	exchStat  int                                                 // exchange status override
-	dataFn    func(w http.ResponseWriter, r *http.Request, n int) // data handler
-	lastAuth  string
-	lastQuery string
+	srv        *httptest.Server
+	exchanges  atomic.Int32
+	dataCalls  atomic.Int32
+	mu         sync.Mutex
+	tokenFn    func(n int) string                                  // token body for nth exchange (1-based)
+	exchStat   int                                                 // exchange status override
+	dataFn     func(w http.ResponseWriter, r *http.Request, n int) // data handler
+	lastAuth   string
+	lastQuery  string
+	exchAccept string
+	dataAccept string
 }
 
 func newFake(t *testing.T) *fakeGarmin {
@@ -45,6 +47,15 @@ func newFake(t *testing.T) *fakeGarmin {
 			if !strings.HasPrefix(r.Header.Get("Authorization"), "ApiKey ") {
 				t.Errorf("exchange auth header wrong")
 			}
+			f.mu.Lock()
+			f.exchAccept = r.Header.Get("Accept")
+			f.mu.Unlock()
+			// Mimic the real endpoint: it serves text/plain, so an Accept that
+			// excludes text/plain and */* is answered with 406.
+			if acc := r.Header.Get("Accept"); acc != "" && !strings.Contains(acc, "text/plain") && !strings.Contains(acc, "*/*") {
+				w.WriteHeader(http.StatusNotAcceptable)
+				return
+			}
 			n := int(f.exchanges.Add(1))
 			time.Sleep(5 * time.Millisecond)
 			f.mu.Lock()
@@ -61,6 +72,7 @@ func newFake(t *testing.T) *fakeGarmin {
 		f.mu.Lock()
 		f.lastAuth = r.Header.Get("Authorization")
 		f.lastQuery = r.URL.RawQuery
+		f.dataAccept = r.Header.Get("Accept")
 		fn := f.dataFn
 		f.mu.Unlock()
 		fn(w, r, n)
@@ -321,5 +333,24 @@ func TestBodyLimit(t *testing.T) {
 	resp, err := c.Get(context.Background(), "k", "/p", nil)
 	if err != nil || len(resp.Body) != 8<<20 {
 		t.Fatalf("exact limit should pass: %v", err)
+	}
+}
+
+func TestAcceptHeadersPerRequestKind(t *testing.T) {
+	f := newFake(t)
+	c := NewClient(f.srv.URL, f.srv.Client())
+	if err := c.Validate(context.Background(), "k"); err != nil {
+		t.Fatalf("validate against 406-mimicking fake: %v", err)
+	}
+	if _, err := c.Get(context.Background(), "k", "/p", nil); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.exchAccept != "text/plain, */*" {
+		t.Fatalf("exchange Accept = %q", f.exchAccept)
+	}
+	if f.dataAccept != "application/json, */*;q=0.1" {
+		t.Fatalf("data Accept = %q", f.dataAccept)
 	}
 }
