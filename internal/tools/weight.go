@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // maxWeightDaysB keeps the output within the ~8 KB budget; the Garmin spec
@@ -42,35 +43,56 @@ func getWeightTool() Tool {
 			if err != nil {
 				return Result{}, err
 			}
+			var notes []string
 			for i := range parts {
-				if parts[i].name == "weight" && !a.IncludeAll {
-					parts[i].data = trimWeightB(parts[i].data)
+				if parts[i].name == "weight" && !a.IncludeAll && len(parts[i].errs) == 0 && !parts[i].noData {
+					parts[i].data, notes = trimWeightB(parts[i].data)
 				}
 			}
-			return combinePartsB(parts, fmt.Sprintf("no weight data for %s to %s", a.StartDate, a.EndDate)), nil
+			res := combinePartsB(parts, fmt.Sprintf("no weight data for %s to %s", a.StartDate, a.EndDate))
+			if len(notes) > 0 && res.Data != nil {
+				if res.Note != "" {
+					notes = append([]string{res.Note}, notes...)
+				}
+				res.Note = strings.Join(notes, "; ")
+			}
+			return res, nil
 		},
 	}
 }
 
-// weightKeepB are the measurement fields kept in trimmed weight entries.
+// weightKeepB are the fields kept in trimmed weight entries; weightMeasureB is
+// the subset that counts as a measurement (an entry is "recognised" only when
+// its trimmed form still holds one of them).
 var weightKeepB = map[string]bool{
-	"calendarDate": true, "summaryDate": true, "weight": true, "bmi": true,
-	"bodyFat": true, "bodyWater": true, "muscleMass": true, "boneMass": true,
-	"minWeight": true, "maxWeight": true, "avgWeight": true, "numOfWeightEntries": true,
+	"date": true, "calendarDate": true, "summaryDate": true, "timestampGMT": true,
+	"numOfWeightEntries": true,
+	"weight":             true, "bmi": true, "bodyFat": true, "bodyWater": true, "muscleMass": true,
+	"boneMass": true, "minWeight": true, "maxWeight": true, "avgWeight": true,
 }
 
-// trimWeightB thins a weight/range reply to stay within the output budget:
-// previousDateWeight and nextDateWeight are dropped; each daily summary keeps
-// its scalar fields, and nested measurement objects (for example latestWeight)
-// keep only weightKeepB fields; nested lists (all measurements of the day) are
-// dropped. include_all skips this trimming. Real entries are not in the
-// scrubbed shape sample (it has an empty list), so this follows the known
-// Garmin layout and leaves unknown shapes intact.
-func trimWeightB(data any) any {
+var weightMeasureB = map[string]bool{
+	"weight": true, "bmi": true, "bodyFat": true, "bodyWater": true, "muscleMass": true,
+	"boneMass": true, "minWeight": true, "maxWeight": true, "avgWeight": true,
+}
+
+// weightBudgetB is the size the weight part may take, leaving room for the goal
+// within the ~8 KB output budget.
+const weightBudgetB = 7000
+
+// trimWeightB thins a weight/range reply to stay within the output budget.
+// previousDateWeight and nextDateWeight are dropped. Each daily summary is
+// reduced to its whitelisted fields (nested objects likewise, nested lists are
+// dropped) only when that still leaves at least one measurement key; otherwise
+// the entry is kept whole and a note says the layout was not recognised. If the
+// result is still over weightBudgetB, entries are thinned evenly (first and
+// last kept) and a note says how many were dropped. Notes are returned.
+func trimWeightB(data any) (any, []string) {
 	m, ok := data.(map[string]any)
 	if !ok {
-		return data
+		return data, nil
 	}
+	var notes []string
 	out := map[string]any{}
 	for k, v := range m {
 		switch k {
@@ -79,8 +101,16 @@ func trimWeightB(data any) any {
 		case "dailyWeightSummaries":
 			if l, ok := v.([]any); ok {
 				ts := make([]any, 0, len(l))
+				unknown := false
 				for _, e := range l {
-					ts = append(ts, trimWeightEntryB(e))
+					t, rec := trimWeightEntryB(e)
+					if !rec {
+						unknown = true
+					}
+					ts = append(ts, t)
+				}
+				if unknown {
+					notes = append(notes, "weight entry layout not recognised, some entries are returned untrimmed")
 				}
 				out[k] = ts
 				continue
@@ -88,19 +118,53 @@ func trimWeightB(data any) any {
 		}
 		out[k] = v
 	}
-	return out
+	if l, ok := out["dailyWeightSummaries"].([]any); ok {
+		if kept := thinB(out, l, weightBudgetB); kept < len(l) {
+			notes = append(notes, fmt.Sprintf("weight output thinned to %d of %d daily entries to fit the size budget", kept, len(l)))
+		}
+	}
+	return out, notes
 }
 
-func trimWeightEntryB(e any) any {
+// thinB shrinks out["dailyWeightSummaries"] (orig) until out marshals within
+// budget or two entries remain, keeping the first and last. It returns the
+// number of entries kept.
+func thinB(out map[string]any, orig []any, budget int) int {
+	n := len(orig)
+	for {
+		b, _ := json.Marshal(out)
+		if len(b) <= budget || n <= 2 {
+			return n
+		}
+		n = max(2, n*3/4)
+		picked := make([]any, 0, n)
+		for i := 0; i < n; i++ {
+			picked = append(picked, orig[i*(len(orig)-1)/(n-1)])
+		}
+		out["dailyWeightSummaries"] = picked
+	}
+}
+
+func hasMeasureB(m map[string]any) bool {
+	for k, v := range m {
+		if weightMeasureB[k] && v != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// trimWeightEntryB returns the trimmed entry and true, or the entry whole and
+// false when trimming would leave no measurement key.
+func trimWeightEntryB(e any) (any, bool) {
 	m, ok := e.(map[string]any)
 	if !ok {
-		return e
+		return e, false
 	}
 	out := map[string]any{}
+	found := false
 	for k, v := range m {
 		switch x := v.(type) {
-		case []any:
-			continue
 		case map[string]any:
 			sub := map[string]any{}
 			for sk, sv := range x {
@@ -108,12 +172,23 @@ func trimWeightEntryB(e any) any {
 					sub[sk] = sv
 				}
 			}
+			if hasMeasureB(sub) {
+				found = true
+			}
 			out[k] = sub
+		case []any:
+			continue
 		default:
-			if v != nil {
+			if weightKeepB[k] && v != nil {
 				out[k] = v
+				if weightMeasureB[k] {
+					found = true
+				}
 			}
 		}
 	}
-	return out
+	if !found {
+		return e, false
+	}
+	return out, true
 }

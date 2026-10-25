@@ -169,3 +169,75 @@ func TestGetWeightBudget31Days(t *testing.T) {
 		t.Error("include_all must keep all measurements")
 	}
 }
+
+func weightPayloadB(entries []any) string {
+	b, _ := json.Marshal(map[string]any{"dailyWeightSummaries": entries, "previousDateWeight": map[string]any{"weight": 1}})
+	return string(b)
+}
+
+func runWeightB(t *testing.T, payload string) Result {
+	t.Helper()
+	g := newFakeB(map[string]respB{"weight/range": okB(payload), "weightgoal": noContentB})
+	res, err := runB(t, "get_weight", g, `{"start_date":"2026-01-01","end_date":"2026-01-31"}`)
+	if err != nil || res.IsError() {
+		t.Fatalf("%+v %v", res, err)
+	}
+	return res
+}
+
+func TestGetWeightUnknownLayoutsKeptWhole(t *testing.T) {
+	layouts := map[string]map[string]any{
+		"measurements": {"date": 1, "measurements": []any{map[string]any{"valueKg": 70}}},
+		"latest":       {"summaryDate": "2026-01-01", "latest": map[string]any{"valueKg": 70}},
+		"mixed":        {"a": []any{1, 2}, "b": map[string]any{"x": 1}},
+	}
+	for name, e := range layouts {
+		res := runWeightB(t, weightPayloadB([]any{e}))
+		want, _ := json.Marshal([]any{e})
+		got, _ := json.Marshal(res.Data.(map[string]any)["weight"].(map[string]any)["dailyWeightSummaries"])
+		if string(got) != string(want) {
+			t.Errorf("%s: entry changed: %s", name, got)
+		}
+		if !strings.Contains(res.Note, "not recognised") {
+			t.Errorf("%s: missing note: %q", name, res.Note)
+		}
+	}
+}
+
+func TestGetWeightKnownLayoutTrimmedWithoutNote(t *testing.T) {
+	e := map[string]any{"summaryDate": "2026-01-01", "junk": 5, "latestWeight": map[string]any{"weight": 70, "sourceType": "x", "timestampGMT": 7}, "allWeightMetrics": []any{1}}
+	res := runWeightB(t, weightPayloadB([]any{e}))
+	got, _ := json.Marshal(res.Data.(map[string]any)["weight"].(map[string]any)["dailyWeightSummaries"])
+	if string(got) != `[{"latestWeight":{"timestampGMT":7,"weight":70},"summaryDate":"2026-01-01"}]` {
+		t.Fatalf("got %s", got)
+	}
+	if strings.Contains(res.Note, "not recognised") {
+		t.Fatalf("note %q", res.Note)
+	}
+}
+
+func TestGetWeightOversizeUnknownLayoutThinned(t *testing.T) {
+	var entries []any
+	for i := 0; i < 31; i++ {
+		e := map[string]any{"id": i}
+		for j := 0; j < 30; j++ {
+			e[fmt.Sprintf("field%02d", j)] = "synthetic value"
+		}
+		entries = append(entries, e)
+	}
+	res := runWeightB(t, weightPayloadB(entries))
+	out, _ := json.Marshal(res.Data)
+	if len(out) > 8*1024 {
+		t.Fatalf("output %d bytes", len(out))
+	}
+	l := res.Data.(map[string]any)["weight"].(map[string]any)["dailyWeightSummaries"].([]any)
+	if len(l) >= 31 || len(l) < 2 {
+		t.Fatalf("kept %d", len(l))
+	}
+	if l[0].(map[string]any)["id"] != float64(0) || l[len(l)-1].(map[string]any)["id"] != float64(30) {
+		t.Fatalf("first and last must be kept")
+	}
+	if !strings.Contains(res.Note, "thinned") || !strings.Contains(res.Note, "of 31") {
+		t.Fatalf("note %q", res.Note)
+	}
+}
