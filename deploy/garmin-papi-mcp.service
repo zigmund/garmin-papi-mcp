@@ -12,8 +12,8 @@ ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
 # SIGTERM starts a graceful shutdown: the binary waits up to 15 s for in-flight
-# requests, then closes the remaining connections (long-lived SSE streams never
-# end on their own). 30 s leaves headroom before systemd sends SIGKILL.
+# requests (a tool call may wait on Garmin for up to garmin.timeout), then closes
+# the remaining connections. 30 s leaves headroom before systemd sends SIGKILL.
 TimeoutStopSec=30s
 
 # Run as a transient unprivileged user; no state is written to disk.
