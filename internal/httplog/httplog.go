@@ -1,20 +1,45 @@
 // Package httplog provides a debug-level HTTP access log middleware.
 //
 // It records one "http request" record per request after the handler
-// returns: method, path (never the query string), status, response bytes,
-// duration, client address, user agent and protocol. Headers (Authorization,
-// Cookie, ...) and bodies are never logged.
+// returns: method, path (never the query string), status, duration and client
+// address, plus any attributes the handler added with Annotate. Nothing else:
+// no headers (Authorization, Cookie, User-Agent, ...), bodies, protocol or
+// byte counts.
 package httplog
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
+
+type annotationsKey struct{}
+
+// annotations collects the attributes a handler adds to its request record.
+type annotations struct {
+	mu    sync.Mutex
+	attrs []slog.Attr
+}
+
+// Annotate adds attrs to the access log record of the request whose context
+// is ctx (or a context derived from it). Outside Middleware, or when debug
+// logging is off, it does nothing. Callers must pass only metadata: never
+// credentials, bodies or other request data verbatim.
+func Annotate(ctx context.Context, attrs ...slog.Attr) {
+	a, ok := ctx.Value(annotationsKey{}).(*annotations)
+	if !ok {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.attrs = append(a.attrs, attrs...)
+}
 
 // Option configures Middleware.
 type Option func(**Resolver)
@@ -48,9 +73,14 @@ func Middleware(log *slog.Logger, next http.Handler, opts ...Option) http.Handle
 		}
 		start := time.Now()
 		rw := &recorder{ResponseWriter: w}
+		ann := &annotations{}
+		r = r.WithContext(context.WithValue(ctx, annotationsKey{}, ann))
 		defer func() {
 			p := recover()
-			attrs := make([]slog.Attr, 0, 10)
+			ann.mu.Lock()
+			extra := ann.attrs
+			ann.mu.Unlock()
+			attrs := make([]slog.Attr, 0, 7+len(extra))
 			status := rw.status
 			if status == 0 && p == nil {
 				status = http.StatusOK
@@ -59,12 +89,10 @@ func Middleware(log *slog.Logger, next http.Handler, opts ...Option) http.Handle
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", status),
-				slog.Int64("bytes", rw.bytes),
 				slog.Duration("duration", time.Since(start)),
 				slog.String("remote", rv.ClientIP(r)),
-				slog.String("user_agent", r.UserAgent()),
-				slog.String("proto", r.Proto),
 			)
+			attrs = append(attrs, extra...)
 			if p != nil {
 				if p == http.ErrAbortHandler { //nolint:errorlint // net/http compares by identity
 					attrs = append(attrs, slog.Bool("aborted", true))
@@ -172,14 +200,13 @@ func (rv *Resolver) fromForwardedFor(lines []string) (netip.Addr, bool) {
 
 func normalize(a netip.Addr) netip.Addr { return a.Unmap().WithZone("") }
 
-// recorder captures status and body size. Hijacker and io.ReaderFrom are not
+// recorder captures the status. Hijacker and io.ReaderFrom are not
 // implemented here; they stay reachable only through http.ResponseController
-// via Unwrap (hijacked connections bypass the recorder, so their status and
-// bytes are not tracked).
+// via Unwrap (hijacked connections bypass the recorder, so their status is
+// not tracked).
 type recorder struct {
 	http.ResponseWriter
 	status int
-	bytes  int64
 }
 
 func (r *recorder) WriteHeader(code int) {
@@ -194,9 +221,7 @@ func (r *recorder) Write(p []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
 	}
-	n, err := r.ResponseWriter.Write(p)
-	r.bytes += int64(n)
-	return n, err
+	return r.ResponseWriter.Write(p)
 }
 
 // Flush implements http.Flusher; it is required for SSE through

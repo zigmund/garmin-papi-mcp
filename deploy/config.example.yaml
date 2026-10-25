@@ -6,11 +6,13 @@ listen: 127.0.0.1:8787
 # Public base URL as seen by claude.ai or ChatGPT. Absolute https origin, no
 # path/query/fragment. http is accepted only for loopback hosts (localhost,
 # 127.0.0.0/8, ::1) unless allow_insecure_http is set. The same rule applies to
-# oauth.allowed_redirect_uris and garmin.base_url. The MCP endpoint is
-# <public_url>/mcp.
+# oauth.allowed_redirect_uris. garmin.base_url may use http only for loopback
+# hosts, whatever allow_insecure_http says (every user's API key is sent
+# there). The MCP endpoint is <public_url>/mcp.
 public_url: https://garmin-papi-mcp.zigmund.xyz
 
-# Accept plain http for non-loopback hosts in the URLs above. Default false;
+# Accept plain http for non-loopback hosts in public_url and
+# oauth.allowed_redirect_uris (never in garmin.base_url). Default false;
 # enabling it logs a startup warning. Only for trusted networks.
 # allow_insecure_http: false
 
@@ -87,13 +89,13 @@ oauth:
 # limits:
 #   ip:    { per_minute: 300, burst: 60 }   # per client IP, before the token is opened
 #   token: { per_minute: 60,  burst: 20 }   # per grant (one Personal API key, shared by all OAuth clients)
-#   max_concurrent_per_token: 8             # in-flight requests; an SSE stream counts as one
-#   max_in_flight: 1024                     # global, open SSE streams included
-#   max_request_body: 10485760              # bytes (413 beyond), at least 1024; cannot be disabled
+#   max_concurrent_per_token: 8             # in-flight requests per grant
+#   max_in_flight: 1024                     # global in-flight requests (503 beyond)
+#   max_request_body: 10485760              # bytes (413 beyond), at least 1024; cannot be disabled; capped at 1 MiB
 
 # Garmin Connect Personal API client.
 # garmin:
-#   base_url: https://personal.connectapi.garmin.com  # https unless loopback or allow_insecure_http
+#   base_url: https://personal.connectapi.garmin.com  # https unless loopback (allow_insecure_http does not apply)
 #   timeout: 20s                                      # per Garmin request, at most 5m
 
 # Reverse proxies whose X-Forwarded-For / X-Real-IP are trusted for the client IP

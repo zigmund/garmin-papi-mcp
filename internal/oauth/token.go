@@ -286,6 +286,13 @@ func (s *Handlers) refresh(w http.ResponseWriter, r *http.Request, form url.Valu
 		grant("token without key")
 		return
 	}
+	if s.rejected != nil && s.rejected.Rejected(rt.APIKey) {
+		// Garmin refused this key on a tool call: refreshing would only
+		// revive a dead key. The token is not consumed; the client must go
+		// back to the authorize form, where a working key clears the mark.
+		grant("key rejected by Garmin")
+		return
+	}
 	now := s.now()
 	start := rt.Start
 	if start == 0 {

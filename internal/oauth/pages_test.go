@@ -176,7 +176,7 @@ func TestPagePrivacyCopy(t *testing.T) {
 		"A TLS reverse proxy in front of this server sees the key while you submit it.",
 		"This server is not affiliated with Garmin and you are giving your Personal API key to a third party.",
 		"The token is a bearer secret: whoever holds it can use your Garmin data until it expires, and nothing is revoked when you disconnect the connector.",
-		"This server logs request metadata only (time, client IP address on sign-in attempts, status); it never logs your key, tokens, or Garmin data.",
+		"This server logs request metadata only: time, status, client IP address on sign-in attempts and, if the operator turns on debug logging, on every request, plus the tool name; it never logs your key, tokens or Garmin data.",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)

@@ -8,7 +8,7 @@ A single YAML file, passed with `-config`. Unknown keys are rejected. `deploy/co
 | --- | --- | --- |
 | `listen` | `127.0.0.1:8787` | Address the HTTP server binds to |
 | `public_url` | required | Public https origin, no path/query/fragment. The MCP URL is `<public_url>/mcp` |
-| `allow_insecure_http` | `false` | Allow plain http for non-loopback hosts in `public_url`, redirect URIs and `garmin.base_url` |
+| `allow_insecure_http` | `false` | Allow plain http for non-loopback hosts in `public_url` and redirect URIs. It does not apply to `garmin.base_url`, which may use http only for loopback hosts |
 | `trusted_proxies` | `127.0.0.0/8`, `::1/128` | CIDRs or IPs whose `X-Forwarded-For` / `X-Real-IP` are trusted for the client IP. Setting it replaces the default; `/0` prefixes are rejected |
 
 ## `log`
@@ -74,14 +74,14 @@ Zero or unset means the default; `-1` disables a single limit; `limits.disabled:
 | `limits.token.per_minute` / `burst` | 60 / 20 | Per grant (one Personal API key, shared by all OAuth clients) |
 | `limits.max_concurrent_per_token` | `8` | In-flight requests per grant |
 | `limits.max_in_flight` | `1024` | In-flight requests overall; beyond it 503 |
-| `limits.max_request_body` | `10485760` | Request body cap in bytes (413 beyond), at least 1024; cannot be disabled |
+| `limits.max_request_body` | `10485760` | Request body cap in bytes (413 beyond), at least 1024; cannot be disabled. The effective cap is at most 1 MiB, the largest JSON-RPC message the MCP handler accepts |
 | `limits.disabled` | `false` | Turns off all limits above except the body cap |
 
 ## `garmin`
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `garmin.base_url` | `https://personal.connectapi.garmin.com` | Garmin API origin (https unless loopback or `allow_insecure_http`) |
+| `garmin.base_url` | `https://personal.connectapi.garmin.com` | Garmin API origin: https, or http for a loopback host only; `allow_insecure_http` does not apply, because every user's API key is sent there |
 | `garmin.timeout` | `20s` | Per Garmin request, at most `5m` |
 
 ## `tls`

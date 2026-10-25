@@ -7,6 +7,9 @@ import (
 	"testing"
 )
 
+// garminHTTPMsg is the error for a plain-http, non-loopback garmin.base_url.
+const garminHTTPMsg = "must use https (http is allowed only for loopback hosts; allow_insecure_http does not apply because the API key is sent there)"
+
 // transportCfg is urlCase plus an optional extra top-level snippet.
 func transportCfg(field, v, extra string) string { return extra + urlCase(field, v) }
 
@@ -18,16 +21,25 @@ func TestHTTPSRequired(t *testing.T) {
 	}
 	const msg = "must use https (http is allowed only for loopback hosts or with allow_insecure_http)"
 	for field, path := range fields {
+		want := msg
+		if field == "garmin" {
+			want = garminHTTPMsg
+		}
 		for _, in := range []string{"http://mcp.example.com", "http://192.0.2.1", "http://[2001:db8::1]:80", "HTTP://mcp.example.com", "http://localhost.example.com"} {
 			_, err := Parse([]byte(transportCfg(field, in, "")), ".")
-			if err == nil || !strings.Contains(err.Error(), path+": "+msg) {
+			if err == nil || !strings.Contains(err.Error(), path+": "+want) {
 				t.Errorf("%s %s: err = %v", field, in, err)
 			}
 			if err != nil && strings.Contains(err.Error(), "mcp.example.com") {
 				t.Errorf("%s %s: error echoes the URL: %v", field, in, err)
 			}
-			// The escape hatch accepts it.
-			if _, err := Parse([]byte(transportCfg(field, in, "allow_insecure_http: true\n")), "."); err != nil {
+			// The escape hatch accepts it, except for garmin.base_url: the API
+			// key travels there, so plain http stays loopback-only.
+			_, err = Parse([]byte(transportCfg(field, in, "allow_insecure_http: true\n")), ".")
+			switch {
+			case field == "garmin" && (err == nil || !strings.Contains(err.Error(), "garmin.base_url: "+garminHTTPMsg)):
+				t.Errorf("%s %s with allow_insecure_http: err = %v, want the loopback-only error", field, in, err)
+			case field != "garmin" && err != nil:
 				t.Errorf("%s %s with allow_insecure_http: %v", field, in, err)
 			}
 		}

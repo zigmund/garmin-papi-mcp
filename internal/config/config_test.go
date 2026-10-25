@@ -275,7 +275,10 @@ func TestConfigRejectsGarminHTTP(t *testing.T) {
 		{"http://localhost:8080", false, true},
 		{"http://[::1]:8080", false, true},
 		{"https://garmin.example.com", false, true},
-		{"http://garmin.example.com", true, true},
+		// allow_insecure_http does not relax garmin.base_url: the key goes there.
+		{"http://garmin.example.com", true, false},
+		{"http://192.0.2.1:8080", true, false},
+		{"http://127.0.0.1:8080", true, true},
 	} {
 		y := base() + "garmin: {base_url: \"" + tc.url + "\"}\n"
 		if tc.insecure {
