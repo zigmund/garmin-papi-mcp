@@ -9,7 +9,8 @@ import (
 
 const (
 	// SessionUnlimited is the literal that marks a session choice without an
-	// absolute end ("until revoked").
+	// absolute end: it lasts until the refresh token goes unused for its idle
+	// lifetime or Garmin rejects the key.
 	SessionUnlimited = "unlimited"
 	// MinSessionChoice is the shortest accepted session choice.
 	MinSessionChoice = time.Hour

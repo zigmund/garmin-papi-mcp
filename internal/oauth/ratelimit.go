@@ -3,6 +3,7 @@ package oauth
 import (
 	"math"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -21,7 +22,7 @@ const (
 // Limiter names in Server.limits. An IPv6 client is charged against one
 // limiter per tier (/64, /56, /48), named name, name+tier56 and name+tier48;
 // the unkeyed ceilings on authorize are globalKey (codes issued) and
-// keyCheckKey (Garmin key checks).
+// keyCheckKey (Garmin key checks); keyRejectedKey is keyed by network.
 const (
 	tier56       = "/56"
 	tier48       = "/48"
@@ -32,6 +33,9 @@ const (
 	globalKey = "authorize/global"
 	// keyCheckKey is the unkeyed ceiling on Garmin key checks of any outcome.
 	keyCheckKey = "authorize/key_check"
+	// keyRejectedKey is the budget of keys Garmin rejects, per network (see
+	// networkKey).
+	keyRejectedKey = "authorize/key_rejected"
 
 	// globalLogInterval bounds how often the ceiling being hit is logged.
 	globalLogInterval = time.Minute
@@ -75,7 +79,8 @@ func (s *Handlers) warnGlobalOversized() {
 
 // newLimiters builds the limiters of every rate-limited endpoint (separate
 // bucket sets, IPv6 tiers scaled by ratelimit.Scale56/Scale48, plus the global
-// authorize and key-check ceilings), or nil when rate limiting is disabled. Zero config
+// authorize and key-check ceilings and the per-network rejected-key budget),
+// or nil when rate limiting is disabled. Zero config
 // values mean the defaults, so a Config that skipped config.Parse still gets
 // limits.
 func newLimiters(rl config.RateLimit, codeTTL time.Duration, now func() time.Time) map[string]*ratelimit.Limiter {
@@ -87,7 +92,7 @@ func newLimiters(rl config.RateLimit, codeTTL time.Duration, now func() time.Tim
 	mk := func(l config.Limit, scale int) *ratelimit.Limiter {
 		return ratelimit.New(l.PerMinute*scale, l.Burst*scale, ratelimit.WithClock(now))
 	}
-	m := make(map[string]*ratelimit.Limiter, 14)
+	m := make(map[string]*ratelimit.Limiter, 15)
 	for name, l := range map[string]config.Limit{"register": rl.Register, authorizeKey: rl.Authorize, "token": rl.Token, formKey: rl.AuthorizeForm} {
 		m[name] = mk(l, 1)
 		m[name+tier56] = mk(l, ratelimit.Scale56)
@@ -102,6 +107,7 @@ func newLimiters(rl config.RateLimit, codeTTL time.Duration, now func() time.Tim
 	}
 	m[globalKey] = mk(g, 1)
 	m[keyCheckKey] = mk(rl.KeyCheckGlobal, 1)
+	m[keyRejectedKey] = mk(rl.KeyRejected, 1)
 	return m
 }
 
@@ -200,6 +206,52 @@ func (s *Handlers) chargeKeyCheck(w http.ResponseWriter) bool {
 	}
 	w.Header().Set("Retry-After", retryAfterSeconds(wait))
 	return false
+}
+
+// chargeKeyRejected takes one token from the rejected-key budget of the
+// client's network before its key is sent to Garmin. The caller gives it
+// back with refund unless Garmin rejects the key, so only rejected keys
+// spend it: a network that keeps submitting junk keys runs dry and gets 429
+// without a Garmin call, while keys Garmin accepts never count. It is charged
+// before the global key-check ceiling, so a network out of budget cannot
+// spend that ceiling either. When the budget is empty it sets Retry-After on
+// w and returns false.
+func (s *Handlers) chargeKeyRejected(w http.ResponseWriter, r *http.Request) (refund func(), ok bool) {
+	lim := s.limits[keyRejectedKey]
+	if lim == nil {
+		return func() {}, true
+	}
+	ip := s.clientIP(r)
+	key := networkKey(ip)
+	if ok, wait := lim.Allow(key); !ok {
+		// Client IP only: never the key or the form.
+		s.log.Debug("rate limit exceeded", "endpoint", "key_rejected", "remote", ip, "retry_after", wait.String())
+		w.Header().Set("Retry-After", retryAfterSeconds(wait))
+		return nil, false
+	}
+	return func() { lim.Refund(key) }, true
+}
+
+// networkKey maps a client IP to the network its rejected keys are counted
+// against: the /24 of an IPv4 (or IPv4-mapped) address, the /48 of an IPv6
+// address. These are the smallest blocks an attacker can be expected to hold
+// many addresses in, and large enough that an honest user's typos are shared
+// with few others. Text that is not an IP is its own key.
+func networkKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.Unmap().WithZone("")
+	bits := 48
+	if a.Is4() {
+		bits = 24
+	}
+	p, err := a.Prefix(bits)
+	if err != nil { // unreachable: valid for both families
+		return a.String()
+	}
+	return p.String()
 }
 
 // retryAfterSeconds renders d as whole seconds, rounded up, at least 1.

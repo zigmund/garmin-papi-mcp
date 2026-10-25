@@ -13,10 +13,12 @@ ExecStart=/usr/local/bin/garmin-papi-mcp -config /etc/garmin-papi-mcp/config.yam
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2s
-# SIGTERM starts a graceful shutdown: the binary waits up to 15 s for in-flight
-# requests (a tool call may wait on Garmin for up to garmin.timeout), then closes
-# the remaining connections. 30 s leaves headroom before systemd sends SIGKILL.
-TimeoutStopSec=30s
+# SIGTERM starts a graceful shutdown: in-flight requests get 20 s to finish (one
+# Garmin request at the default garmin.timeout); tool calls still waiting on
+# Garmin are then cancelled and answered with a tool error, and 5 s later the
+# remaining connections are closed. 35 s leaves headroom over those 25 s before
+# systemd sends SIGKILL; keep it above 25 s.
+TimeoutStopSec=35s
 
 # Run as a transient unprivileged user; no state is written to disk.
 DynamicUser=yes
@@ -32,15 +34,17 @@ DynamicUser=yes
 # Create the source file with: install -m 0600 -o root -g root /dev/null /etc/garmin-papi-mcp/keys
 LoadCredential=keys:/etc/garmin-papi-mcp/keys
 
-# Built-in TLS (tls.cert_file/tls.key_file), pick one:
-# a) Hot reload from Let's Encrypt: grant read access to the cert files via a
-#    group that can read /etc/letsencrypt/{live,archive}, e.g.
+# Built-in TLS (tls.cert_file/tls.key_file) with a Let's Encrypt certificate:
+# /etc/letsencrypt/{live,archive} are 0700 root and privkey*.pem 0600 by
+# default, so the dynamic user cannot read them. Pick one; the steps and a
+# certbot deploy hook for each are in
+# docs/configuration.md#lets-encrypt-with-built-in-tls
+# a) Read in place, with hot reload: groupadd --system tls-certs; give it g+rx
+#    on live/, archive/ and the certificate's dirs and 0640 on
+#    archive/<name>/privkey*.pem (the deploy hook re-applies this after each
+#    renewal, then reloads the service), and add in a drop-in:
 #      SupplementaryGroups=tls-certs
-#    /etc/letsencrypt/{live,archive} are 0700 root and privkey*.pem 0600 by
-#    default: groupadd tls-certs; chgrp -R tls-certs the two dirs; chmod 750
-#    them; chmod 640 archive/*/privkey*.pem (see docs/configuration.md; re-apply
-#    from a certbot deploy hook, then `systemctl reload garmin-papi-mcp`).
-# b) Private copy (no hot reload; needs a restart after renewal):
+# b) Private copy (no hot reload; the deploy hook restarts the service):
 #      LoadCredential=fullchain.pem:/etc/letsencrypt/live/mcp.example.com/fullchain.pem
 #      LoadCredential=privkey.pem:/etc/letsencrypt/live/mcp.example.com/privkey.pem
 #    with tls.cert_file/key_file under /run/credentials/garmin-papi-mcp.service/.

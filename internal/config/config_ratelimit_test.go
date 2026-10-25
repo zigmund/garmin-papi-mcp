@@ -157,3 +157,29 @@ func TestRateLimitKeyCheckGlobal(t *testing.T) {
 		}
 	}
 }
+
+// key_rejected is the per-network budget of keys Garmin rejects: unset or
+// zero means 5 per minute, burst 10; a partial setting keeps the other
+// default; negatives are refused.
+func TestRateLimitKeyRejected(t *testing.T) {
+	cfg, err := Parse([]byte(base()), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := cfg.OAuth.RateLimit.KeyRejected; g != (Limit{5, 10}) || g != (Limit{DefaultKeyRejectedPerMinute, DefaultKeyRejectedBurst}) {
+		t.Errorf("default key_rejected = %+v, want 5/10", g)
+	}
+	cfg, err = Parse([]byte(base()+"\noauth:\n  rate_limit:\n    key_rejected: { burst: 3 }\n"), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := cfg.OAuth.RateLimit.KeyRejected; g != (Limit{DefaultKeyRejectedPerMinute, 3}) {
+		t.Errorf("key_rejected = %+v", g)
+	}
+	_, err = Parse([]byte(base()+"\noauth:\n  rate_limit:\n    key_rejected: { per_minute: -1, burst: -1 }\n"), ".")
+	for _, f := range []string{"oauth.rate_limit.key_rejected.per_minute", "oauth.rate_limit.key_rejected.burst"} {
+		if err == nil || !strings.Contains(err.Error(), f) {
+			t.Errorf("error lacks %s: %v", f, err)
+		}
+	}
+}

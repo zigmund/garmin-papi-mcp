@@ -26,6 +26,7 @@ func TestRefreshReuseLogHasNoRawIdentifiers(t *testing.T) {
 	_, g0 := e.wantOK(t, e.do(e.codeForm(e.none, e.code(t, e.none, nil))))
 	e.wantOK(t, e.do(e.refreshForm(e.none, g0)))
 	fam, _ := e.chainRefresh(t, g0)
+	e.pastGrace()
 	e.wantErr(t, e.do(e.refreshForm(e.none, g0)), 400, "invalid_grant") // reuse
 
 	out := logs.String()

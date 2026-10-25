@@ -175,7 +175,7 @@ func TestPagePrivacyCopy(t *testing.T) {
 		"Your key is sealed into the token and never stored or logged.",
 		"A TLS reverse proxy in front of this server sees the key while you submit it.",
 		"This server is not affiliated with Garmin and you are giving your Personal API key to a third party.",
-		"The token is a bearer secret: whoever holds it can use your Garmin data until it expires, and nothing is revoked when you disconnect the connector.",
+		"The token is a bearer secret: whoever holds it can use your Garmin data until the session ends. This server cannot revoke it: disconnecting the connector changes nothing, and after you revoke the key at Garmin access can continue for up to 24 hours.",
 		"This server logs request metadata only: time, status, client IP address on sign-in attempts and, if the operator turns on debug logging, on every request, plus the tool name; it never logs your key, tokens or Garmin data.",
 	} {
 		if !strings.Contains(body, want) {

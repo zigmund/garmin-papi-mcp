@@ -44,7 +44,7 @@ func setSessions(cfg *config.Config, t *testing.T, def string, raw ...string) {
 
 func TestSessionLabels(t *testing.T) {
 	for raw, want := range map[string]string{
-		"unlimited": "Until revoked",
+		"unlimited": "No fixed end (ends after 30 days unused)",
 		"1h":        "1 hour",
 		"5h":        "5 hours",
 		"25h":       "25 hours",
@@ -60,9 +60,40 @@ func TestSessionLabels(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := sessionLabel(c); got != want {
+		if got := sessionLabel(c, config.DefaultRefreshTokenTTL); got != want {
 			t.Errorf("sessionLabel(%s) = %q, want %q", raw, got, want)
 		}
+	}
+}
+
+// Review item 7: an unlimited session cannot be revoked; it ends only once the
+// refresh token goes unused for refresh_token_ttl, so the label names that
+// lifetime as configured, never a hard-coded one.
+func TestSessionUnlimitedLabelNamesIdleTTL(t *testing.T) {
+	c := config.SessionChoice{Unlimited: true}
+	for idle, want := range map[time.Duration]string{
+		720 * time.Hour:  "No fixed end (ends after 30 days unused)",
+		8760 * time.Hour: "No fixed end (ends after 1 year unused)",
+		24 * time.Hour:   "No fixed end (ends after 1 day unused)",
+		36 * time.Hour:   "No fixed end (ends after 36 hours unused)",
+		90 * time.Minute: "No fixed end (ends after 90 minutes unused)",
+		time.Minute:      "No fixed end (ends after 1 minute unused)",
+		90 * time.Second: "No fixed end (ends after 2 minutes unused)", // rounded up
+	} {
+		if got := sessionLabel(c, idle); got != want {
+			t.Errorf("idle %s: %q, want %q", idle, got, want)
+		}
+	}
+
+	e := newAZ(t)
+	e.srv.cfg.OAuth.RefreshTokenTTL = 14 * 24 * time.Hour
+	setSessions(e.srv.cfg, t, "", "720h", "unlimited")
+	b := pageBody(t, e)
+	if want := `value="unlimited"><span>No fixed end (ends after 14 days unused)</span>`; !strings.Contains(b, want) {
+		t.Errorf("page lacks %q:\n%s", want, b)
+	}
+	if strings.Contains(strings.ToLower(b), "until revoked") {
+		t.Error("page still promises revocation")
 	}
 }
 
@@ -79,7 +110,7 @@ func TestSessionFormRendering(t *testing.T) {
 		`<input type="radio" name="session" value="720h"><span>30 days</span>`,
 		`<input type="radio" name="session" value="2160h" checked><span>90 days</span>`,
 		`<input type="radio" name="session" value="8760h"><span>1 year</span>`,
-		`<input type="radio" name="session" value="unlimited"><span>Until revoked</span>`,
+		`<input type="radio" name="session" value="unlimited"><span>No fixed end (ends after 30 days unused)</span>`,
 	} {
 		if !strings.Contains(b, want) {
 			t.Errorf("page lacks %q:\n%s", want, b)

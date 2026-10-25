@@ -39,7 +39,7 @@ The keys are read only at startup: restart the service after changing them (SIGH
 | `oauth.refresh_token_ttl` | `720h` | Idle lifetime of a refresh token |
 | `oauth.max_session_ttl` | `2160h` | Absolute lifetime of a login from the code exchange; refreshing never extends it |
 | `oauth.code_ttl` | `5m` | Authorization code lifetime, at most `10m` |
-| `oauth.session_choices` | none | "Stay connected for" choices on the form: up to 8 entries, each a whole number of hours of at least `1h`, or `unlimited` (no absolute end; `refresh_token_ttl` still applies). Replaces `max_session_ttl` for new logins |
+| `oauth.session_choices` | none | "Stay connected for" choices on the form: up to 8 entries, each a whole number of hours of at least `1h`, or `unlimited` (no absolute end; `refresh_token_ttl` still applies, and the form says so: "No fixed end (ends after 30 days unused)" with the default). Replaces `max_session_ttl` for new logins |
 | `oauth.session_default` | first choice | One of the choices, pre-selected. Requires `session_choices` |
 | `oauth.allowed_redirect_uris` | claude.ai, claude.com and ChatGPT callbacks | Exact-match allow-list: `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`, `https://chatgpt.com/connector_platform_oauth_redirect`. The origin (scheme, host and port) of each entry is also an accepted `Origin` on `/mcp`, next to the origin of `public_url`; any other `Origin` is refused with 403 (a request without `Origin` is accepted) |
 
@@ -55,7 +55,7 @@ Optional, shown on the authorize page (English; plain text, HTML-escaped).
 
 ### `oauth.rate_limit`
 
-Per-IP token buckets (sustained `per_minute`, bursts up to `burst`), plus two unkeyed ceilings, answered with 429 and `Retry-After`. Defaults are generous because claude.ai and ChatGPT share egress addresses.
+Per-IP token buckets (sustained `per_minute`, bursts up to `burst`), a per-network budget of rejected keys, plus two unkeyed ceilings, answered with 429 and `Retry-After`. Defaults are generous because claude.ai and ChatGPT share egress addresses (the authorize form, though, is submitted from the user's own browser).
 
 | Key | Default (per_minute / burst) | Applies to |
 | --- | --- | --- |
@@ -65,7 +65,8 @@ Per-IP token buckets (sustained `per_minute`, bursts up to `burst`), plus two un
 | `oauth.rate_limit.authorize_form` | 300 / 100 | `GET /oauth/authorize` |
 | `oauth.rate_limit.authorize_global` | derived from `code_ttl` (2500 / 2500 at `5m`) | All `POST /oauth/authorize` together, unkeyed; counts submissions that are about to get a code |
 | `oauth.rate_limit.key_check_global` | 300 / 100 | All Garmin key checks of `POST /oauth/authorize` together, unkeyed, whatever the outcome (accepted, rejected, no verdict). Each check is a Garmin call made for whoever submits the form; beyond the ceiling the form answers 429 with `Retry-After` and "try again" without calling Garmin |
-| `oauth.rate_limit.disabled` | `false` | Switches off all of the above, the two ceilings included |
+| `oauth.rate_limit.key_rejected` | 5 / 10 | Keys Garmin rejects on `POST /oauth/authorize`, per network of the submitter: the /24 of an IPv4 address, the /48 of an IPv6 address. Charged before the check and given back unless Garmin rejects the key, so accepted keys (and checks without a verdict) cost nothing. A network out of budget gets 429 with `Retry-After` without a Garmin call and without spending `key_check_global`, so junk keys from a few networks cannot lock everyone else out of logging in: holding `key_check_global` down takes `key_check_global.per_minute / key_rejected.per_minute` networks (60 by default). The price is that everyone in such a network, honest users behind the same NAT included, waits for the refill even with a good key; raise it if many of your users share one network |
+| `oauth.rate_limit.disabled` | `false` | Switches off all of the above, the ceilings and the per-network budget included |
 
 ## `limits` (MCP endpoint)
 
@@ -75,10 +76,12 @@ Zero or unset means the default; `-1` disables a single limit; `limits.disabled:
 | --- | --- | --- |
 | `limits.ip.per_minute` / `burst` | 300 / 60 | Per client IP, charged before the token is opened and given back once the token authenticates and the body is read: it caps unauthenticated and invalid traffic only, because claude.ai and ChatGPT call for all their users from a few addresses. Authenticated calls are governed by the per-grant limits |
 | `limits.token.per_minute` / `burst` | 60 / 20 | Per grant (one Personal API key, shared by all OAuth clients) |
-| `limits.max_concurrent_per_token` | `16` | In-flight requests per grant |
-| `limits.max_in_flight` | `1024` | In-flight requests overall; beyond it 503 |
-| `limits.max_request_body` | `10485760` | Request body cap in bytes (413 beyond), at least 1024; cannot be disabled. The effective cap is at most 1 MiB, the largest JSON-RPC message the MCP handler accepts |
+| `limits.max_concurrent_per_token` | `16` | In-flight requests per grant. A request counts from before its body is read, so this also bounds the bodies a grant has being read at once |
+| `limits.max_in_flight` | `1024` | In-flight requests overall, bodies being read included; beyond it 503 |
+| `limits.max_request_body` | `65536` | Request body cap in bytes (413 beyond), from 1024 to 65536 (a larger value is rejected at startup, not clamped); cannot be disabled. A tool call is well under 4 KiB |
 | `limits.disabled` | `false` | Turns off all limits above except the body cap |
+
+Fixed, not configurable: on every path request headers must arrive within 10 s and the body within 30 s, also the body of a refused request (net/http reads it before answering); the OAuth endpoints allow 10 s for the whole request. These bound reading the request only, never a slow tool call. On SIGTERM or SIGINT the server stops accepting connections and gives in-flight requests 20 s (one Garmin request at the default `garmin.timeout`); tool calls still running are then cancelled and answered with a tool error asking to retry, and 5 s later the remaining connections are closed. The bundled systemd unit's `TimeoutStopSec=35s` covers those 25 s.
 
 ## `garmin`
 
@@ -95,6 +98,78 @@ Optional built-in TLS; leave unset behind a reverse proxy.
 | --- | --- | --- |
 | `tls.cert_file`, `tls.key_file` | none | Set both or neither. Relative paths are resolved against the config directory |
 | `tls.reload_interval` | `1m` | How often the files are re-checked (also on SIGHUP); a bad new pair keeps the old certificate |
+
+### Let's Encrypt with built-in TLS
+
+The unit runs the service as a transient user (`DynamicUser=yes`), and certbot keeps `/etc/letsencrypt/live` and `/etc/letsencrypt/archive` at `0700 root` and the private keys at `0600`, so out of the box the service gets `loading tls certificate: ... permission denied` at start. `live/<name>/*.pem` are symlinks into `archive/<name>/`, which holds numbered files (`privkey1.pem`, `privkey2.pem`, ...); every renewal writes a new set there and repoints the symlinks. Get the certificate first, for example `certbot certonly --standalone -d mcp.example.com` (needs port 80 free) or `--webroot`, then pick one of the two ways below (also sketched in `deploy/garmin-papi-mcp.service`); the examples use the certificate name `mcp.example.com`.
+
+**a) Read in place, with hot reload.** A static group gets read access to this one certificate, and the dynamic user joins it via `SupplementaryGroups=` (a static group from `/etc/group` works with `DynamicUser=`).
+
+1. Create the group: `groupadd --system tls-certs`.
+2. Install a certbot deploy hook. Certbot runs every executable in `/etc/letsencrypt/renewal-hooks/deploy/` after each successful renewal, so the new key file gets the permissions too, then the service is told to load it:
+
+   ```sh
+   #!/bin/sh
+   # /etc/letsencrypt/renewal-hooks/deploy/garmin-papi-mcp (chmod 0755)
+   set -eu
+   name=mcp.example.com
+   le=/etc/letsencrypt
+   # Only for this certificate (RENEWED_LINEAGE is unset when run by hand).
+   case "${RENEWED_LINEAGE:-$le/live/$name}" in "$le/live/$name") ;; *) exit 0 ;; esac
+   # Directories: the group needs x to traverse them to the files.
+   chgrp tls-certs "$le/live" "$le/archive" "$le/live/$name" "$le/archive/$name"
+   chmod g+rx "$le/live" "$le/archive" "$le/live/$name" "$le/archive/$name"
+   # Keys: readable by the group, never by others.
+   chgrp tls-certs "$le/archive/$name"/privkey*.pem
+   chmod 0640 "$le/archive/$name"/privkey*.pem
+   # Load the new pair now instead of within tls.reload_interval
+   # (SIGHUP via ExecReload; does nothing while the service is stopped).
+   systemctl try-reload-or-restart garmin-papi-mcp
+   ```
+
+   Other certificates on the host stay unreadable: the group can list `live/` and `archive/`, but their keys keep `0600 root`.
+3. Run the hook once by hand to fix the current files: `/etc/letsencrypt/renewal-hooks/deploy/garmin-papi-mcp`.
+4. Add the group to the unit with a drop-in, `systemctl edit garmin-papi-mcp`:
+
+   ```ini
+   [Service]
+   SupplementaryGroups=tls-certs
+   ```
+
+5. Point the config at the `live/` symlinks, which are re-read on every check, so a renewal is picked up without a restart:
+
+   ```yaml
+   tls:
+     cert_file: /etc/letsencrypt/live/mcp.example.com/fullchain.pem
+     key_file: /etc/letsencrypt/live/mcp.example.com/privkey.pem
+   ```
+
+6. `systemctl restart garmin-papi-mcp` (group membership is set only at start); the log shows `tls certificate loaded`. To test the access alone: `systemd-run --wait --quiet -p DynamicUser=yes -p SupplementaryGroups=tls-certs test -r /etc/letsencrypt/live/mcp.example.com/privkey.pem && echo readable`.
+
+**b) Private copy, restart on renewal.** `LoadCredential=` makes systemd (as root) copy the files into the service's credentials directory at start, so no permissions change. The copy is not updated on renewal, so hot reload has nothing to pick up and the service needs a restart. Add to the unit with `systemctl edit garmin-papi-mcp` (this adds to the unit's `LoadCredential=keys:...`, it does not replace it):
+
+```ini
+[Service]
+LoadCredential=fullchain.pem:/etc/letsencrypt/live/mcp.example.com/fullchain.pem
+LoadCredential=privkey.pem:/etc/letsencrypt/live/mcp.example.com/privkey.pem
+```
+
+```yaml
+tls:
+  cert_file: /run/credentials/garmin-papi-mcp.service/fullchain.pem
+  key_file: /run/credentials/garmin-papi-mcp.service/privkey.pem
+```
+
+and restart after each renewal from a deploy hook:
+
+```sh
+#!/bin/sh
+# /etc/letsencrypt/renewal-hooks/deploy/garmin-papi-mcp (chmod 0755)
+[ "${RENEWED_LINEAGE:-}" = /etc/letsencrypt/live/mcp.example.com ] || exit 0
+exec systemctl try-restart garmin-papi-mcp
+```
+
+The restart drops open connections for a moment; issued tokens stay valid, since they are sealed rather than stored.
 
 ## Reverse proxy
 
@@ -124,8 +199,8 @@ server {
     # HSTS: the service sends it itself only with built-in TLS.
     add_header Strict-Transport-Security "max-age=31536000" always;
 
-    # The service accepts at most 1 MiB per MCP request (413 beyond); the
-    # authorize form is far smaller.
+    # The service accepts at most limits.max_request_body (64 KiB by default)
+    # per MCP request (413 beyond); the authorize form is far smaller.
     client_max_body_size 1m;
 
     proxy_http_version 1.1;

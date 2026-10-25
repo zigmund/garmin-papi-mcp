@@ -186,11 +186,17 @@ func TestServerTimeouts(t *testing.T) {
 	if s.http.ReadHeaderTimeout != ReadHeaderTimeout || s.http.IdleTimeout != IdleTimeout || s.http.MaxHeaderBytes != MaxHeaderBytes {
 		t.Errorf("server limits = %v %v %d", s.http.ReadHeaderTimeout, s.http.IdleTimeout, s.http.MaxHeaderBytes)
 	}
+	if s.http.ReadTimeout != ReadTimeout || s.http.WriteTimeout != 0 {
+		t.Errorf("read/write timeout = %v %v, want %v and none", s.http.ReadTimeout, s.http.WriteTimeout, ReadTimeout)
+	}
 	if s.http.ErrorLog == nil {
 		t.Error("ErrorLog not routed through the sanitizer")
 	}
-	if s.shutdownTimeout != 15*time.Second {
-		t.Errorf("shutdown timeout = %v", s.shutdownTimeout)
+	// The drain period lets a Garmin request at the default garmin.timeout
+	// finish; deploy/garmin-papi-mcp.service relies on the total (see
+	// TestUnitStopTimeoutCoversShutdown).
+	if s.shutdownDrain != config.DefaultGarminTimeout || s.shutdownGrace != 5*time.Second || ShutdownTimeout != 25*time.Second {
+		t.Errorf("shutdown drain/grace = %v/%v, total %v", s.shutdownDrain, s.shutdownGrace, ShutdownTimeout)
 	}
 }
 
@@ -223,16 +229,21 @@ func TestServeGracefulShutdown(t *testing.T) {
 	}
 }
 
+// A handler that ignores the cancellation at the end of the drain period is
+// cut off when the grace period is over.
 func TestServeShutdownTimeoutClosesStreams(t *testing.T) {
 	var logs syncBuf
 	s := newTestServer(t, &logs)
-	s.shutdownTimeout = 100 * time.Millisecond
+	s.shutdownDrain, s.shutdownGrace = 50*time.Millisecond, 50*time.Millisecond
 	started := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 	s.http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		w.(http.Flusher).Flush()
 		close(started)
 		<-r.Context().Done()
+		<-release
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -260,16 +271,16 @@ func TestServeShutdownTimeoutClosesStreams(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve blocked on a long request")
 	}
-	if el := time.Since(begin); el < s.shutdownTimeout {
-		t.Errorf("Serve returned after %v, before the shutdown timeout %v", el, s.shutdownTimeout)
+	if el, total := time.Since(begin), s.shutdownDrain+s.shutdownGrace; el < total {
+		t.Errorf("Serve returned after %v, before the shutdown timeout %v", el, total)
 	}
 	select {
 	case <-readDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("client connection still open after Serve returned")
 	}
-	if !strings.Contains(logs.String(), "timed out") {
-		t.Errorf("missing timeout log: %s", logs.String())
+	if !strings.Contains(logs.String(), "cancelling them") || !strings.Contains(logs.String(), "timed out") {
+		t.Errorf("missing cancellation or timeout log: %s", logs.String())
 	}
 }
 

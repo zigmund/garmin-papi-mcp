@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -19,6 +20,22 @@ func TestProxyLimitsDefaults(t *testing.T) {
 	}
 	if cfg.Limits != want {
 		t.Errorf("Limits = %+v, want %+v", cfg.Limits, want)
+	}
+	if DefaultMaxRequestBody != 64<<10 {
+		t.Errorf("default body cap = %d, want 64 KiB", DefaultMaxRequestBody)
+	}
+}
+
+// Both bounds of max_request_body are accepted as they are.
+func TestProxyLimitsBodyBounds(t *testing.T) {
+	for _, n := range []int{MinMaxRequestBody, MaxMaxRequestBody} {
+		cfg, err := Parse([]byte(base()+"\nlimits:\n  max_request_body: "+strconv.Itoa(n)+"\n"), ".")
+		if err != nil {
+			t.Fatalf("%d: %v", n, err)
+		}
+		if cfg.Limits.MaxRequestBody != n {
+			t.Errorf("max_request_body %d resolved to %d", n, cfg.Limits.MaxRequestBody)
+		}
 	}
 }
 
@@ -79,6 +96,8 @@ func TestProxyLimitsValidation(t *testing.T) {
 		{"in flight", "max_in_flight: -3", "limits.max_in_flight"},
 		{"body negative", "max_request_body: -1", "limits.max_request_body"},
 		{"body tiny", "max_request_body: 10", "limits.max_request_body"},
+		{"body huge", "max_request_body: 65537", "limits.max_request_body: must be between 1024 and 65536"},
+		{"body old default", "max_request_body: 10485760", "limits.max_request_body"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

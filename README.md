@@ -6,6 +6,11 @@ A public instance is hosted by its author at `https://garmin-papi-mcp.zigmund.xy
 
 > **Read this first.** This project is **not affiliated with, endorsed by or supported by Garmin**. Garmin's Personal API key program is intended for individuals accessing their own data. Giving your key to a third-party server (this one, or any other instance) is your decision and your responsibility: check Garmin's terms before you do. The server is strictly read-only; it cannot change anything in your Garmin account. If you are not comfortable trusting an operator with your key, run your own instance.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/flow-dark.svg">
+  <img alt="Flow: you paste your Personal API key on the server's own page; Garmin checks it and the server seals it into a token your AI client holds; on each tool call the server unseals it and reads your data from Garmin." src="docs/images/flow-light.svg">
+</picture>
+
 ## How it works
 
 ```mermaid
@@ -27,7 +32,7 @@ sequenceDiagram
     S-->>C: tool result (trimmed for the model)
 ```
 
-There is no database. The key lives only inside the sealed tokens; the client stores them and cannot decrypt them. Server-side state is in memory and lost on restart: single-use replay caches, rate limiters and a cache of Garmin JWTs keyed by a hash of the key.
+There is no database. The key lives only inside the sealed tokens; the client stores them and cannot decrypt them. Server-side state is in memory and lost on restart: single-use replay caches, rate limiters and a cache of Garmin JWTs keyed by a hash of the key. Losing the replay caches has a security cost, described under [Privacy and security](#privacy-and-security).
 
 ### Who sees what
 
@@ -74,7 +79,7 @@ An empty result is reported as "no data for this period", not as an error. A Gar
 
 ## Connect from claude.ai or ChatGPT
 
-1. Add a custom connector (claude.ai: Settings -> Connectors -> Add custom connector; ChatGPT: turn on Developer mode under Settings -> Apps & Connectors -> Advanced settings, then add a custom MCP connector). Whether ChatGPT offers custom MCP connectors depends on your plan and, for workspaces, on the workspace settings.
+1. Add a custom connector (claude.ai: Settings -> Connectors -> Add custom connector; ChatGPT: Plugins -> Add -> Add custom MCP server; no Developer mode needed, and it works on the free plan too). In a ChatGPT workspace, the workspace settings may still restrict custom servers.
 2. Enter the MCP URL: `<public_url>/mcp`, for example `https://garmin-papi-mcp.zigmund.xyz/mcp`.
 3. When the client sends you to the login page, read it, paste your Personal API key, choose how long to stay connected, accept the terms if the operator set any, and press Authorize.
 
@@ -140,11 +145,13 @@ Optional: write your own terms of use (see `deploy/terms.example.txt`, which is 
 
 - **The key is sealed into the tokens.** It is AES-256-GCM encrypted with the operator's token key and carried in the access and refresh tokens. It is never stored on the server and never logged. Logs carry metadata only (tool name, status, duration, client IP); never tokens, keys, Garmin JWTs, request or response bodies, or query strings.
 - **Tokens are bearer secrets and are not revoked.** Whoever holds a token can read your data until it expires or the key stops working. Disconnecting in the client does not invalidate it server-side (there is no database). Revoking the Personal API key at Garmin does not cut access at once either: the server keeps using the Garmin session (JWT) it cached for the key, so access ends only when that cached session expires, which can take up to 24 hours after the key is revoked at Garmin. To stop access, revoke the key at Garmin **and** disconnect the connector in the client. The operator can also remove the token keys the tokens were sealed with (which signs everyone out).
-- **Session length.** Access tokens last 1 h; refresh tokens 720 h idle; an absolute session limit of 90 days by default (`oauth.max_session_ttl`). The login form can let you choose a shorter or longer session (`oauth.session_choices`). All configurable by the operator.
+- **Session length.** Access tokens last 1 h; refresh tokens 720 h idle; an absolute session limit of 90 days by default (`oauth.max_session_ttl`). The login form can let you choose a shorter or longer session (`oauth.session_choices`), possibly one with no fixed end: nothing revokes such a session; it ends once its refresh token goes unused for the idle lifetime, or within 24 hours of revoking the key at Garmin (see above). All configurable by the operator.
 - **Garmin JWT.** The server exchanges your key for a Garmin JWT (valid 24 h) lazily and caches it in memory only, keyed by a hash of the key, until shortly before it expires. A restart drops the cache.
 - **TLS proxy.** A reverse proxy that terminates TLS sees the key in the form submission and the bearer tokens. Only use an operator you trust.
 - **Rate limits.** Every Garmin call leaves from the server's IP, so the server limits requests per IP on the OAuth endpoints, per IP (unauthenticated and invalid requests only) and per token on the MCP endpoint, caps concurrency per token and in flight, and caps the request body. Defaults are in [docs/configuration.md](docs/configuration.md).
-- **Redirect URIs are allow-listed** (claude.ai, claude.com, ChatGPT by default). Authorization uses PKCE S256, dynamic client registration and single-use codes and refresh tokens.
+- **Key checks on the login form.** Each submitted key costs one call to Garmin, so all key checks together are capped (300 a minute by default), and each network (an IPv4 /24 or an IPv6 /48) may submit only a few keys that Garmin rejects (5 a minute, bursts of 10); keys Garmin accepts cost the network nothing. Someone flooding the form with junk keys to block everyone's logins therefore needs dozens of networks rather than a handful of addresses (by default 60 networks to hold the shared cap down). The price: everyone in a network that has used up its budget, honest users behind the same NAT included, waits for it to refill, even with a good key.
+- **Redirect URIs are allow-listed** (claude.ai, claude.com, ChatGPT by default). Authorization uses PKCE S256, dynamic client registration and single-use codes and refresh tokens (within the limits of the next point).
+- **Single use lasts only as long as the process.** Refresh tokens are rotated: each refresh returns a new one and spends the old one. Presenting a spent refresh token again more than 30 seconds after it was first used counts as theft and revokes the whole login chain, the legitimate newest token included; within those 30 seconds it is treated as a retry (a client that lost the answer to a timeout, or refreshed twice at once) and gets a new pair, so theft in that window goes undetected. The record of spent codes, spent refresh tokens and revoked chains is kept in memory only. After a restart (every deploy is one), any refresh token that has not yet expired is accepted again, including spent ones and those of chains revoked for theft, until its own expiry (720 h idle by default); an authorization code likewise within its 5 minutes. After a suspected token leak, restarting is no remedy: the operator must rotate the token keys (add a new first key, remove the old one, restart), which signs everyone out.
 - **Read-only.** Every tool is annotated read-only and only issues GET requests to Garmin.
 - **Hygiene.** This repository contains no real keys, tokens or user data; CI scans for secrets with gitleaks and blocks credentials and local agent files from being tracked.
 

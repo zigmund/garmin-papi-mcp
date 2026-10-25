@@ -248,8 +248,9 @@ func (s *Handlers) authorizeForm(w http.ResponseWriter, r *http.Request) *authFa
 // can only submit credentials the attacker already has, and the resulting
 // code goes to an allowlisted redirect URI whose client checks its own state.
 // The form is also a key-validity oracle (one Garmin call per submit); the
-// per-IP authorize rate limit and the global key-check ceiling bound it, and
-// a code is only ever issued for a key Garmin accepts.
+// per-IP authorize rate limit, the per-network rejected-key budget and the
+// global key-check ceiling bound it, and a code is only ever issued for a key
+// Garmin accepts.
 // The sealed field binds all request parameters (and expires), so the POST
 // cannot be steered elsewhere. As defence in depth a browser-declared
 // cross-site POST (Sec-Fetch-Site) is refused.
@@ -321,14 +322,26 @@ func (s *Handlers) authorizeSubmit(w http.ResponseWriter, r *http.Request) *auth
 	}
 
 	// Every key check is a Garmin call made for whoever submitted the form,
-	// whatever its outcome, so all of them together are capped (unkeyed). A
-	// refusal never reaches Garmin; the sealed request stays valid, so the
-	// form is shown again for a retry.
-	if !s.chargeKeyCheck(w) {
+	// whatever its outcome, so all of them together are capped (unkeyed). The
+	// submitter's network pays first, from a budget only rejected keys spend:
+	// junk keys from a few networks cannot drain the shared ceiling and lock
+	// everyone else out. A refusal never reaches Garmin; the sealed request
+	// stays valid, so the form is shown again for a retry.
+	refund, ok := s.chargeKeyRejected(w, r)
+	if !ok {
 		form(http.StatusTooManyRequests, uiMsg(msgTooManyRequests))
 		return nil
 	}
-	if msg, status := s.validateKey(r.Context(), apiKey, r); msg.ID != "" {
+	if !s.chargeKeyCheck(w) {
+		refund()
+		form(http.StatusTooManyRequests, uiMsg(msgTooManyRequests))
+		return nil
+	}
+	msg, status := s.validateKey(r.Context(), apiKey, r)
+	if msg.ID != msgKeyRejected { // accepted, or no verdict: not the submitter's fault
+		refund()
+	}
+	if msg.ID != "" {
 		if status == http.StatusBadGateway {
 			w.Header().Set("Retry-After", retryAfterUnavailable)
 		}
@@ -409,7 +422,7 @@ func (s *Handlers) sessionGroup(selected string, invalid bool) *sessionView {
 	}
 	v := &sessionView{Field: sessionField, Invalid: invalid}
 	for _, c := range o.Sessions {
-		v.Options = append(v.Options, sessionOption{Value: c.String(), Label: sessionLabel(c), Checked: c.String() == checked})
+		v.Options = append(v.Options, sessionOption{Value: c.String(), Label: sessionLabel(c, s.refreshTTL()), Checked: c.String() == checked})
 	}
 	return v
 }

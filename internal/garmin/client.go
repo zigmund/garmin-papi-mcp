@@ -75,6 +75,7 @@ func (c *Client) Get(ctx context.Context, apiKey, path string, query url.Values)
 	if len(query) > 0 {
 		target += "?" + query.Encode()
 	}
+	key := hashKey(apiKey)
 	for attempt := 0; ; attempt++ {
 		jwt, err := c.token(ctx, apiKey, false)
 		if err != nil {
@@ -85,17 +86,21 @@ func (c *Client) Get(ctx context.Context, apiKey, path string, query url.Values)
 			return Response{}, err
 		}
 		if status == http.StatusUnauthorized {
-			if attempt == 0 {
+			if attempt == 0 && !c.cache.scoped(key, jwt) {
 				// The JWT may have been revoked or expired early: drop it
 				// and try once more with a fresh one. If that exchange
 				// answers 401, the key itself is rejected (ErrKeyRejected).
-				c.cache.invalidate(hashKey(apiKey), jwt)
+				c.cache.invalidate(key, jwt)
 				continue
 			}
 			// The exchange that just succeeded proves the key works, so a
 			// 401 with the fresh JWT is about this endpoint (a scope the key
 			// lacks, say): a plain status error, not a rejected key. The
-			// fresh JWT stays cached; it is valid.
+			// fresh JWT stays cached; it is valid. It is marked scoped, and
+			// a 401 with a scoped JWT fails the same way at once, without
+			// dropping it: otherwise every call to such an endpoint would
+			// exchange the key again (and evict the JWT other calls use).
+			c.cache.markScoped(key, jwt)
 			return Response{}, &StatusError{Status: status}
 		}
 		if err := statusErr(status, retryAfter); err != nil {
@@ -146,7 +151,7 @@ func (c *Client) do(ctx context.Context, method, target, auth, accept string, li
 		}
 		return Response{}, 0, 0, fmt.Errorf("garmin: request failed: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
 	if err != nil {
 		if ctx.Err() != nil {

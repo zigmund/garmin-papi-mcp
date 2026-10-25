@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -170,11 +171,15 @@ type stack struct {
 	sealer *seal.Sealer
 	skew   *atomic.Int64 // seconds added to the sealer's clock
 	cfg    *config.Config
+	// stop shuts the server down gracefully and returns what Serve returned;
+	// later calls return the same.
+	stop func() error
 }
 
 type stackOpts struct {
-	yaml  string       // extra top-level config
-	tools []tools.Tool // nil means tools.All()
+	yaml   string        // extra top-level config
+	tools  []tools.Tool  // nil means tools.All()
+	server func(*Server) // adjusts the server before it serves
 }
 
 func newStack(t *testing.T, o stackOpts) *stack {
@@ -211,6 +216,9 @@ func newStack(t *testing.T, o stackOpts) *stack {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if o.server != nil {
+		o.server(srv)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ctx, ln) }()
@@ -218,19 +226,22 @@ func newStack(t *testing.T, o stackOpts) *stack {
 		Timeout:       10 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	t.Cleanup(func() {
-		client.CloseIdleConnections()
+	stop := sync.OnceValue(func() error {
 		cancel()
 		select {
 		case err := <-done:
-			if err != nil {
-				t.Errorf("Serve: %v", err)
-			}
-		case <-time.After(20 * time.Second):
-			t.Error("server did not shut down")
+			return err
+		case <-time.After(30 * time.Second):
+			return errors.New("server did not shut down")
 		}
 	})
-	return &stack{url: pub, client: client, garmin: g, logs: logs, sealer: sealer, skew: skew, cfg: cfg}
+	t.Cleanup(func() {
+		client.CloseIdleConnections()
+		if err := stop(); err != nil {
+			t.Errorf("Serve: %v", err)
+		}
+	})
+	return &stack{url: pub, client: client, garmin: g, logs: logs, sealer: sealer, skew: skew, cfg: cfg, stop: stop}
 }
 
 // metadataURL is the RFC 9728 document of the MCP endpoint.

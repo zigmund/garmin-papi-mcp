@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zigmund/garmin-papi-mcp/internal/config"
 	"github.com/zigmund/garmin-papi-mcp/internal/mcp"
 	"github.com/zigmund/garmin-papi-mcp/internal/tools"
 )
@@ -21,23 +22,29 @@ func TestMCPBodyCapIsAtMostMCPLimit(t *testing.T) {
 		extra string
 		want  int64
 	}{
-		{"", mcp.MaxBodyBytes}, // default 10 MiB is capped at the handler's limit
+		{"", config.DefaultMaxRequestBody}, // the configured cap is the effective one
 		{"limits: { max_request_body: 2048 }\n", 2048},
-		{"limits: { max_request_body: 104857600 }\n", mcp.MaxBodyBytes},
+		{"limits: { max_request_body: 65536 }\n", config.MaxMaxRequestBody},
 	} {
 		cfg := parseCfg(t, testYAML+tc.extra)
 		g := newMCPGuard(cfg, nil, nil, nil, nil, nil, slog.New(slog.DiscardHandler), nil)
-		if got := g.bodyCap(); got != tc.want {
-			t.Errorf("%q: body cap = %d, want %d", tc.extra, got, tc.want)
+		if got := g.bodyCap(); got != tc.want || got > mcp.MaxBodyBytes {
+			t.Errorf("%q: body cap = %d, want %d (at most %d)", tc.extra, got, tc.want, mcp.MaxBodyBytes)
 		}
 	}
-	// End to end: a Content-Length just above the handler's limit is refused
-	// before the body is read, with the default config.
+	// End to end: a Content-Length just above the default cap is refused
+	// before the body is read; a body at the cap passes.
 	s := newStack(t, stackOpts{})
 	l := s.login(t)
-	big := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":"` + strings.Repeat("x", int(mcp.MaxBodyBytes)) + `"}}`
-	if resp, _ := s.rpc(t, l.access, big); resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Errorf("body above the MCP limit = %d, want 413", resp.StatusCode)
+	pad := func(n int) string {
+		const frame = `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":""}}`
+		return `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":"` + strings.Repeat("x", n-len(frame)) + `"}}`
+	}
+	if resp, _ := s.rpc(t, l.access, pad(config.DefaultMaxRequestBody+1)); resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("body above the default cap = %d, want 413", resp.StatusCode)
+	}
+	if resp, body := s.rpc(t, l.access, pad(config.DefaultMaxRequestBody)); resp.StatusCode != http.StatusOK {
+		t.Errorf("body at the default cap = %d %s, want 200", resp.StatusCode, body)
 	}
 }
 
@@ -59,21 +66,23 @@ func slowBody(t *testing.T, s *stack, token string) net.Conn {
 	return conn
 }
 
-// Review item 3: a client stalling mid-body holds no per-token or global
-// slot, and is cut off by the body read deadline.
-func TestSlowBodyHoldsNoSlot(t *testing.T) {
+// Review item 3, revised: the body is read under the grant's slots, so a
+// grant cannot have more bodies being read at once than
+// max_concurrent_per_token. A client stalling mid-body holds its slot until
+// the body read deadline cuts it off, then gives it back.
+func TestSlowBodyHoldsSlotUntilDeadline(t *testing.T) {
 	old := mcpBodyReadTimeout
 	mcpBodyReadTimeout = 500 * time.Millisecond
 	t.Cleanup(func() { mcpBodyReadTimeout = old })
 
-	s := newStack(t, stackOpts{yaml: "limits: { max_concurrent_per_token: 1, max_in_flight: 1 }\n"})
+	s := newStack(t, stackOpts{yaml: "limits: { max_concurrent_per_token: 1 }\n"})
 	l := s.login(t)
 	conn := slowBody(t, s, l.access)
 	time.Sleep(100 * time.Millisecond) // the server is now waiting for the body
 
-	// The same grant, and the only global slot, are still available.
-	if resp, body := s.rpc(t, l.access, initializeBody); resp.StatusCode != http.StatusOK {
-		t.Fatalf("request next to a stalled body = %d %s, want 200", resp.StatusCode, body)
+	// The grant's only slot is taken by the stalled body.
+	if resp, body := s.rpc(t, l.access, initializeBody); resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("request next to a stalled body = %d %s, want 429", resp.StatusCode, body)
 	}
 
 	// The stalled request is answered (or dropped) about at the deadline.
@@ -88,6 +97,33 @@ func TestSlowBodyHoldsNoSlot(t *testing.T) {
 	}
 	if time.Since(start) > 3*time.Second {
 		t.Errorf("cut off after %v", time.Since(start))
+	}
+
+	// The slot is free again.
+	if resp, body := s.rpc(t, l.access, initializeBody); resp.StatusCode != http.StatusOK {
+		t.Fatalf("request after the cut-off = %d %s, want 200", resp.StatusCode, body)
+	}
+}
+
+// The global in-flight cap also bounds the bodies being read: a stalled
+// body holds a global slot, so another grant gets 503 until it is cut off.
+func TestSlowBodyHoldsGlobalSlot(t *testing.T) {
+	old := mcpBodyReadTimeout
+	mcpBodyReadTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { mcpBodyReadTimeout = old })
+
+	s := newStack(t, stackOpts{yaml: "limits: { max_in_flight: 1 }\n"})
+	l := s.login(t)
+	conn := slowBody(t, s, l.access)
+	time.Sleep(100 * time.Millisecond)
+
+	if resp, _ := s.rpc(t, l.access, initializeBody); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("request next to a stalled body = %d, want 503", resp.StatusCode)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _ = bufio.NewReader(conn).ReadString('\n')
+	if resp, body := s.rpc(t, l.access, initializeBody); resp.StatusCode != http.StatusOK {
+		t.Fatalf("request after the cut-off = %d %s, want 200", resp.StatusCode, body)
 	}
 }
 

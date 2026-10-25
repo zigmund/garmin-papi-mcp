@@ -26,12 +26,20 @@ const MaxBodyBytes = 1 << 20
 // responds with another version it supports, and the client decides).
 const fallbackVersion = "2025-11-25"
 
+// supportedVersions are the protocol versions negotiated in initialize and
+// accepted in the MCP-Protocol-Version header. 2025-03-26 is left out: it
+// requires servers to accept JSON-RPC batches, which this server refuses (a
+// batch would carry many tool calls past the per-request limits). Its clients
+// get fallbackVersion and decide whether they can speak it.
 var supportedVersions = map[string]bool{
 	"2024-11-05": true,
-	"2025-03-26": true,
 	"2025-06-18": true,
 	"2025-11-25": true,
 }
+
+// protocolVersionHeader carries the negotiated protocol version on every
+// request after initialize (MCP 2025-06-18 and later).
+const protocolVersionHeader = "MCP-Protocol-Version"
 
 const (
 	codeParse          = -32700
@@ -45,6 +53,9 @@ type rpcRequest struct {
 	ID      json.RawMessage `json:"id"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params"`
+	// Result and Error are set on a client's response to a server request.
+	Result json.RawMessage `json:"result"`
+	Error  json.RawMessage `json:"error"`
 }
 
 type rpcError struct {
@@ -101,20 +112,55 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
-		writeRPC(w, rpcResponse{Error: &rpcError{codeInvalidRequest, "batch requests are not supported"}})
+		// Not a single message, so not a request that a JSON-RPC error
+		// could answer: an HTTP error status (Streamable HTTP).
+		writeRPCStatus(w, http.StatusBadRequest, rpcResponse{Error: &rpcError{codeInvalidRequest, "batch requests are not supported"}})
 		return
 	}
 	var req rpcRequest
-	if err := json.Unmarshal(trimmed, &req); err != nil {
+	// Valid JSON of the wrong shape (a non-string jsonrpc or method, a
+	// non-object message) is an invalid request, not a parse error.
+	var te *json.UnmarshalTypeError
+	err = json.Unmarshal(trimmed, &req)
+	if err != nil && !errors.As(err, &te) {
 		writeRPC(w, rpcResponse{Error: &rpcError{codeParse, "parse error"}})
 		return
 	}
-	// Notifications (no id) and client responses (no method) are acknowledged.
-	if req.Method == "" || strings.HasPrefix(req.Method, "notifications/") || len(req.ID) == 0 {
-		if req.Method == "" && len(req.ID) != 0 {
-			writeRPC(w, rpcResponse{ID: req.ID, Error: &rpcError{codeInvalidRequest, "invalid request"}})
+	isRequest := req.Method != "" && len(req.ID) != 0
+	// invalid answers a malformed message: a request gets a JSON-RPC error
+	// for its id, anything else an HTTP 400 (Streamable HTTP: input that is
+	// not a request and is not accepted gets an HTTP error status).
+	invalid := func(msg string) {
+		if isRequest {
+			writeRPC(w, rpcResponse{ID: req.ID, Error: &rpcError{codeInvalidRequest, msg}})
 			return
 		}
+		writeRPCStatus(w, http.StatusBadRequest, rpcResponse{Error: &rpcError{codeInvalidRequest, msg}})
+	}
+	if err != nil || req.JSONRPC != "2.0" {
+		invalid("invalid request")
+		return
+	}
+	// The header is checked on everything but initialize, which negotiates
+	// the version in its body. A message without one is served as is: the
+	// spec then assumes 2025-03-26, which differs here only in batching,
+	// and this server keeps no session that could tell otherwise.
+	if v := r.Header.Values(protocolVersionHeader); len(v) != 0 && req.Method != "initialize" &&
+		(len(v) != 1 || !supportedVersions[v[0]]) {
+		writeRPCStatus(w, http.StatusBadRequest, rpcResponse{Error: &rpcError{codeInvalidRequest, "unsupported " + protocolVersionHeader}})
+		return
+	}
+	switch {
+	case req.Method == "":
+		// A client response (to a server request, of which this server
+		// sends none) carries exactly one of result and error.
+		if (len(req.Result) != 0) == (len(req.Error) != 0) {
+			invalid("invalid request")
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		return
+	case !isRequest || strings.HasPrefix(req.Method, "notifications/"):
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -216,6 +262,10 @@ func toolResult(text string, isError bool) map[string]any {
 }
 
 func writeRPC(w http.ResponseWriter, resp rpcResponse) {
+	writeRPCStatus(w, http.StatusOK, resp)
+}
+
+func writeRPCStatus(w http.ResponseWriter, status int, resp rpcResponse) {
 	resp.JSONRPC = "2.0"
 	if len(resp.ID) == 0 {
 		resp.ID = json.RawMessage("null")
@@ -226,5 +276,6 @@ func writeRPC(w http.ResponseWriter, resp rpcResponse) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_, _ = w.Write(b)
 }

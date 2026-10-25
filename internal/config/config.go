@@ -63,6 +63,12 @@ const (
 	// Garmin call, whatever the outcome).
 	DefaultKeyCheckGlobalPerMinute = 300
 	DefaultKeyCheckGlobalBurst     = 100
+	// DefaultKeyRejectedPerMinute/Burst are the per-network budget of keys
+	// Garmin rejects on the authorize form (per /24 IPv4 or /48 IPv6 network).
+	// Small next to the key-check ceiling, so draining that ceiling with junk
+	// keys takes many networks; enough for typos behind a shared NAT.
+	DefaultKeyRejectedPerMinute = 5
+	DefaultKeyRejectedBurst     = 10
 
 	// KeySize is the required decoded size of every token key (AES-256).
 	KeySize = 32
@@ -85,9 +91,6 @@ func DefaultTrustedProxies() []string { return []string{"127.0.0.0/8", "::1/128"
 
 // MCPPath is the fixed path of the MCP endpoint.
 const MCPPath = "/mcp"
-
-// reservedPrefixes are paths owned by the service itself.
-var reservedPrefixes = []string{"/oauth", "/.well-known", "/healthz", MCPPath}
 
 var quotedRe = regexp.MustCompile("`[^`]*`")
 
@@ -205,6 +208,11 @@ type RateLimit struct {
 	// outcome (accepted, rejected, no verdict), across all clients: each one
 	// is a Garmin call made on behalf of whoever submitted the form.
 	KeyCheckGlobal Limit `yaml:"key_check_global"`
+	// KeyRejected is the budget of keys Garmin rejects on the authorize form,
+	// per /24 IPv4 or /48 IPv6 network of the submitter. A network without
+	// budget left gets no key check at all (so it cannot spend KeyCheckGlobal);
+	// keys Garmin accepts cost nothing.
+	KeyRejected Limit `yaml:"key_rejected"`
 }
 
 // Limit is one endpoint's bucket: sustained PerMinute requests, bursts up to Burst.
@@ -228,6 +236,7 @@ func (r RateLimit) Resolved() RateLimit {
 	fill(&r.Token, DefaultTokenPerMinute, DefaultTokenBurst)
 	fill(&r.AuthorizeForm, DefaultAuthorizeFormPerMinute, DefaultAuthorizeFormBurst)
 	fill(&r.KeyCheckGlobal, DefaultKeyCheckGlobalPerMinute, DefaultKeyCheckGlobalBurst)
+	fill(&r.KeyRejected, DefaultKeyRejectedPerMinute, DefaultKeyRejectedBurst)
 	return r
 }
 
@@ -655,6 +664,7 @@ func (c *Config) validate() []error {
 		{"authorize_form", c.OAuth.RateLimit.AuthorizeForm},
 		{"authorize_global", c.OAuth.RateLimit.AuthorizeGlobal},
 		{"key_check_global", c.OAuth.RateLimit.KeyCheckGlobal},
+		{"key_rejected", c.OAuth.RateLimit.KeyRejected},
 	} {
 		if l.v.PerMinute < 0 {
 			add("oauth.rate_limit.%s.per_minute: must not be negative", l.field)

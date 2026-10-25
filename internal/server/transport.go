@@ -30,9 +30,8 @@ const (
 )
 
 // isOAuthPath reports whether p belongs to the authorization server: the
-// /oauth tree and the /.well-known discovery documents. The MCP path is
-// excluded: a tool call may legitimately take long, so no absolute read
-// deadline applies to it (its body is small and read up front).
+// /oauth tree and the /.well-known discovery documents. Every other path is
+// bounded by the server's ReadTimeout, and the MCP body by readBody.
 func isOAuthPath(p string) bool {
 	return p == "/oauth" || strings.HasPrefix(p, "/oauth/") || strings.HasPrefix(p, "/.well-known/")
 }

@@ -28,23 +28,30 @@ import (
 const keyRejectedDescription = "Garmin rejected the API key"
 
 // mcpBodyReadTimeout bounds reading the request body of an MCP call (at most
-// mcp.MaxBodyBytes). A variable only so tests can shorten it.
+// bodyCap). The request holds its limiter slots meanwhile. A variable only so
+// tests can shorten it.
 var mcpBodyReadTimeout = 30 * time.Second
 
 // mcpGuard protects the MCP endpoint. Order: path and method (free) ->
 // Origin -> per-IP rate (before the token is opened, so unauthenticated
 // floods are cut cheaply) -> bearer token (and the rejected-keys set) -> body
-// size and encoding -> body read under a deadline -> per-grant rate ->
-// per-grant concurrency -> global in-flight cap -> MCP handler. The body is
-// read before any slot is taken, so a slow client holds none. A refusal by
+// size and encoding -> per-grant rate -> per-grant concurrency -> global
+// in-flight cap -> body read under a deadline -> MCP handler. A refusal by
 // the cheap checks gives back the rate tokens taken before it.
+//
+// The body is read under the slots, so the bodies being read at once are
+// bounded like the requests in flight: at most max_concurrent_per_token per
+// grant and max_in_flight overall, each at most limits.max_request_body. A
+// grant stalling its bodies holds its slots only until the read deadline,
+// which is no more than slow tool calls of the same grant could hold, and
+// only an authenticated request gets this far.
 //
 // The per-IP limit caps unauthenticated and invalid traffic only: once the
 // bearer token has authenticated and the body has been read, the IP tokens
 // are given back and the per-grant limits govern the request. Platforms such
 // as claude.ai call for all their users from a few egress addresses. A
 // missing, invalid or rejected token, or a body that cannot be read, stays
-// charged.
+// charged (a body that cannot be read also stays charged to the grant).
 type mcpGuard struct {
 	origins  map[string]bool // accepted Origin values, see allowedOrigins
 	meta     string          // resource_metadata URL advertised in challenges
@@ -60,7 +67,7 @@ type mcpGuard struct {
 func newMCPGuard(cfg *config.Config, s *seal.Sealer, open func(string) (string, error), g tools.Getter,
 	toolset []tools.Tool, rejected *rejectedKeys, log *slog.Logger, clientIP func(*http.Request) string,
 ) *mcpGuard {
-	safe := safeTools(toolset, log)
+	safe := noteShutdown(safeTools(toolset, log))
 	if rejected != nil {
 		safe = markRejected(safe, rejected)
 	}
@@ -81,8 +88,8 @@ func newMCPGuard(cfg *config.Config, s *seal.Sealer, open func(string) (string, 
 	}
 }
 
-// bodyCap is the largest body the guard reads: limits.max_request_body, but
-// never more than the MCP handler accepts.
+// bodyCap is the largest body the guard reads: limits.max_request_body (at
+// most config.MaxMaxRequestBody), and never more than the MCP handler accepts.
 func (g *mcpGuard) bodyCap() int64 { return min(g.limits.maxBody(), mcp.MaxBodyBytes) }
 
 func (g *mcpGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -127,18 +134,18 @@ func (g *mcpGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "content-encoding not supported", http.StatusUnsupportedMediaType)
 		return
 	}
-	body, ok := readBody(w, r, maxBody)
-	if !ok {
-		return // the IP stays charged: a broken or abandoned body
-	}
-	// Authenticated, with a complete body: from here on only the per-grant
-	// limits apply.
-	g.limits.refundIP(ipKeys)
-	release, ok := g.limits.admit(w, nil, grantKey(g.sealer, apiKey))
+	release, ok := g.limits.admit(w, ipKeys, grantKey(g.sealer, apiKey))
 	if !ok {
 		return
 	}
 	defer release()
+	body, ok := readBody(w, r, maxBody)
+	if !ok {
+		return // the IP and the grant stay charged: a broken or abandoned body
+	}
+	// Authenticated, with a complete body: from here on only the per-grant
+	// limits apply.
+	g.limits.refundIP(ipKeys)
 
 	info := g.peek(body)
 	if info.method != "" {
@@ -495,6 +502,29 @@ func markRejected(toolset []tools.Tool, rejected *rejectedKeys) []tools.Tool {
 			res, err := h(ctx, c, apiKey, args)
 			if errors.Is(err, tools.ErrUnauthorized) {
 				rejected.Add(apiKey)
+			}
+			return res, err
+		}
+		out[i] = t
+	}
+	return out
+}
+
+// shutdownNote is added to the errors of a tool call that shutdown cancelled,
+// so the client retries it instead of reporting Garmin as unreachable.
+const shutdownNote = "the server is restarting; retry the call"
+
+// noteShutdown returns copies of toolset whose failed results carry
+// shutdownNote when the call was cancelled by shutdown (errShuttingDown).
+// Data a call got before the cancellation is kept.
+func noteShutdown(toolset []tools.Tool) []tools.Tool {
+	out := make([]tools.Tool, len(toolset))
+	for i, t := range toolset {
+		h := t.Handler
+		t.Handler = func(ctx context.Context, c tools.Getter, apiKey string, args json.RawMessage) (tools.Result, error) {
+			res, err := h(ctx, c, apiKey, args)
+			if err == nil && len(res.Errors) > 0 && errors.Is(context.Cause(ctx), errShuttingDown) {
+				res.Errors = append(res.Errors, shutdownNote)
 			}
 			return res, err
 		}

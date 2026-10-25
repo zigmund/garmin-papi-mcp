@@ -83,17 +83,18 @@ func TestFamilyEvictedAcceptedAsNew(t *testing.T) {
 	mustUse(t, c, "c", 0, exp, now) // evicts a
 	// a's rotated token (gen 0) is accepted as new: the documented trade-off.
 	mustUse(t, c, "a", 0, exp, now)
-	// Non-evicted families keep reuse detection.
-	if reuse, err := c.use("c", 0, exp, now); !reuse || err != errFamilyRevoked {
+	// Non-evicted families keep reuse detection (past the retry grace).
+	if reuse, err := c.use("c", 0, exp, now.Add(refreshRetryGrace)); !reuse || err != errFamilyRevoked {
 		t.Fatalf("reuse = %v, err = %v", reuse, err)
 	}
 }
 
-// revokeFam creates family id and revokes it by presenting generation 0 again.
+// revokeFam creates family id and revokes it by presenting generation 0 again
+// once the retry grace is over.
 func revokeFam(t *testing.T, c *familyCache, id string, exp, now time.Time) {
 	t.Helper()
 	mustUse(t, c, id, 0, exp, now)
-	if reuse, err := c.use(id, 0, exp, now); !reuse || err != errFamilyRevoked {
+	if reuse, err := c.use(id, 0, exp, now.Add(refreshRetryGrace)); !reuse || err != errFamilyRevoked {
 		t.Fatalf("revoke %s: reuse = %v, err = %v", id, reuse, err)
 	}
 }
@@ -334,8 +335,9 @@ func TestFamilyFlaggedNeverEvicted(t *testing.T) {
 	}
 	const filler = 999
 	c.revs.add(filler, exp, now) // the set is full: reuses can only be flagged
+	late := now.Add(refreshRetryGrace)
 	for _, id := range []string{"f2", "f3"} {
-		if reuse, err := c.use(id, 0, exp, now); !reuse || err != errFamilyRevoked {
+		if reuse, err := c.use(id, 0, exp, late); !reuse || err != errFamilyRevoked {
 			t.Fatalf("%s: %v %v", id, reuse, err)
 		}
 	}
@@ -353,7 +355,7 @@ func TestFamilyFlaggedNeverEvicted(t *testing.T) {
 	c.check(t)
 	// A third flagged entry leaves nothing evictable: fail closed, no growth.
 	c.revs.add(filler, exp, now)
-	if reuse, _ := c.use("n2", 0, exp, now); !reuse {
+	if reuse, _ := c.use("n2", 0, exp, late); !reuse {
 		t.Fatal("no reuse")
 	}
 	delete(c.revs.exp, filler)
@@ -369,6 +371,46 @@ func TestFamilyFlaggedNeverEvicted(t *testing.T) {
 	}
 	if len(c.seen) != 2 || !c.revs.has(c.revs.hash("f2"), now) {
 		t.Fatalf("flagged f2 not moved to the set: seen = %d", len(c.seen))
+	}
+	c.check(t)
+}
+
+// Presenting the generation just redeemed again within refreshRetryGrace of
+// its first redemption is a retry: accepted, nothing revoked, and the window
+// is not moved by the retry. After it, or for an older generation, or with a
+// clock stepped back, it is a reuse.
+func TestFamilyRetryGrace(t *testing.T) {
+	now, exp := fixedNow, fixedNow.Add(time.Hour)
+
+	c := newFamilyCache(10)
+	mustUse(t, c, "f", 0, exp, now)
+	mustUse(t, c, "f", 0, exp, now)                                    // a concurrent duplicate
+	mustUse(t, c, "f", 0, exp, now.Add(refreshRetryGrace-time.Second)) // a retry after a timeout
+	if reuse, err := c.use("f", 0, exp, now.Add(refreshRetryGrace)); !reuse || err != errFamilyRevoked {
+		t.Fatalf("after the grace: reuse = %v, err = %v", reuse, err)
+	}
+	c.check(t)
+
+	// The grace restarts with every new generation, and covers only it.
+	mustUse(t, c, "g", 0, exp, now)
+	later := now.Add(time.Hour / 2)
+	mustUse(t, c, "g", 1, exp, later)
+	mustUse(t, c, "g", 1, exp, later.Add(time.Second))
+	if reuse, err := c.use("g", 0, exp, later.Add(time.Second)); !reuse || err != errFamilyRevoked {
+		t.Fatalf("older generation within the grace: reuse = %v, err = %v", reuse, err)
+	}
+
+	// A clock stepped back before the redemption is outside the grace.
+	mustUse(t, c, "h", 0, exp, now)
+	if reuse, err := c.use("h", 0, exp, now.Add(-time.Second)); !reuse || err != errFamilyRevoked {
+		t.Fatalf("clock step back: reuse = %v, err = %v", reuse, err)
+	}
+
+	// A retry extends the family's lifetime like any redemption.
+	mustUse(t, c, "i", 0, exp, now)
+	mustUse(t, c, "i", 0, exp.Add(time.Hour), now.Add(time.Second))
+	if f := c.seen["i"]; f == nil || !f.exp.Equal(exp.Add(time.Hour)) {
+		t.Fatalf("retry did not extend the family: %+v", f)
 	}
 	c.check(t)
 }

@@ -66,8 +66,17 @@ func newTestHandler() http.Handler {
 
 func post(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return postVersion(t, h, body)
+}
+
+// postVersion posts body with one MCP-Protocol-Version line per version.
+func postVersion(t *testing.T, h http.Handler, body string, versions ...string) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	for _, v := range versions {
+		req.Header.Add("MCP-Protocol-Version", v)
+	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
@@ -96,13 +105,13 @@ func errCode(t *testing.T, m map[string]any) float64 {
 
 func TestHandlerInitialize(t *testing.T) {
 	h := newTestHandler()
-	rec := post(t, h, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"x","version":"1"}}}`)
+	rec := post(t, h, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"x","version":"1"}}}`)
 	if rec.Code != 200 {
 		t.Fatalf("status %d", rec.Code)
 	}
 	m := decode(t, rec)
 	res := m["result"].(map[string]any)
-	if res["protocolVersion"] != "2025-03-26" {
+	if res["protocolVersion"] != "2025-06-18" {
 		t.Fatalf("version %v", res["protocolVersion"])
 	}
 	if _, ok := res["capabilities"].(map[string]any)["tools"]; !ok {
@@ -121,6 +130,104 @@ func TestHandlerInitialize(t *testing.T) {
 	// decides whether it can speak it).
 	if res["protocolVersion"] != "2025-11-25" {
 		t.Fatalf("fallback version %v, want the latest supported 2025-11-25", res["protocolVersion"])
+	}
+
+	for _, v := range []string{"2024-11-05", "2025-11-25"} {
+		res = decode(t, post(t, h, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+v+`"}}`))["result"].(map[string]any)
+		if res["protocolVersion"] != v {
+			t.Fatalf("version %v, want %s", res["protocolVersion"], v)
+		}
+	}
+	// 2025-03-26 requires accepting batches, which this server refuses: it
+	// is not negotiated.
+	res = decode(t, post(t, h, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`))["result"].(map[string]any)
+	if res["protocolVersion"] != "2025-11-25" {
+		t.Fatalf("2025-03-26 negotiated as %v, want the fallback 2025-11-25", res["protocolVersion"])
+	}
+}
+
+func TestHandlerProtocolVersionHeader(t *testing.T) {
+	h := newTestHandler()
+	const ping = `{"jsonrpc":"2.0","id":1,"method":"ping"}`
+	for _, v := range [][]string{nil, {"2024-11-05"}, {"2025-06-18"}, {"2025-11-25"}} {
+		rec := postVersion(t, h, ping, v...)
+		if rec.Code != 200 || decode(t, rec)["result"] == nil {
+			t.Fatalf("%q: %d %q", v, rec.Code, rec.Body.String())
+		}
+	}
+	for _, v := range [][]string{{"1999-01-01"}, {"2025-03-26"}, {""}, {"2025-06-18, 2025-11-25"}, {"2025-06-18", "2025-11-25"}} {
+		rec := postVersion(t, h, ping, v...)
+		if rec.Code != 400 {
+			t.Fatalf("%q: status %d, want 400", v, rec.Code)
+		}
+		if m := decode(t, rec); errCode(t, m) != -32600 || m["id"] != nil {
+			t.Fatalf("%q: body %v", v, m)
+		}
+		// Notifications are refused the same way.
+		if rec = postVersion(t, h, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, v...); rec.Code != 400 {
+			t.Fatalf("%q notification: status %d, want 400", v, rec.Code)
+		}
+	}
+	// initialize negotiates in its body; the header does not apply to it.
+	rec := postVersion(t, h, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`, "1999-01-01")
+	if rec.Code != 200 || decode(t, rec)["result"].(map[string]any)["protocolVersion"] != "2025-06-18" {
+		t.Fatalf("initialize: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerJSONRPCVersion(t *testing.T) {
+	h := newTestHandler()
+	for _, body := range []string{
+		`{"jsonrpc":"1.0","id":3,"method":"ping"}`,
+		`{"id":3,"method":"ping"}`,
+		`{"jsonrpc":2.0,"id":3,"method":"ping"}`,
+	} {
+		rec := post(t, h, body)
+		if rec.Code != 200 {
+			t.Fatalf("%s: status %d", body, rec.Code)
+		}
+		m := decode(t, rec)
+		if errCode(t, m) != -32600 || m["id"] != float64(3) || m["result"] != nil {
+			t.Fatalf("%s: %v", body, m)
+		}
+	}
+	// Without a request to answer (a notification, a message that is not an
+	// object or has no usable method): an HTTP error status.
+	for _, body := range []string{
+		`{"jsonrpc":"1.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":3,"method":7}`,
+		`"ping"`,
+		`null`,
+	} {
+		rec := post(t, h, body)
+		if rec.Code != 400 || errCode(t, decode(t, rec)) != -32600 {
+			t.Fatalf("%s: %d %q", body, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestHandlerClientResponseAccepted(t *testing.T) {
+	h := newTestHandler()
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":5,"result":{}}`,
+		`{"jsonrpc":"2.0","id":"s-1","error":{"code":-32601,"message":"no"}}`,
+		`{"jsonrpc":"2.0","id":5,"result":null}`,
+	} {
+		if rec := post(t, h, body); rec.Code != 202 || rec.Body.Len() != 0 {
+			t.Fatalf("%s: %d %q", body, rec.Code, rec.Body.String())
+		}
+	}
+	// A message with neither method nor exactly one of result and error is
+	// no response.
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":5}`,
+		`{"jsonrpc":"2.0","id":5,"result":{},"error":{"code":1,"message":"x"}}`,
+		`{"jsonrpc":"2.0"}`,
+	} {
+		rec := post(t, h, body)
+		if rec.Code != 400 || errCode(t, decode(t, rec)) != -32600 {
+			t.Fatalf("%s: %d %q", body, rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -222,6 +329,9 @@ func TestHandlerRejectsGET(t *testing.T) {
 
 func TestHandlerBatchRejected(t *testing.T) {
 	rec := post(t, newTestHandler(), `[{"jsonrpc":"2.0","id":1,"method":"ping"}]`)
+	if rec.Code != 400 {
+		t.Fatalf("status %d", rec.Code)
+	}
 	if c := errCode(t, decode(t, rec)); c != -32600 {
 		t.Fatalf("code %v", c)
 	}
