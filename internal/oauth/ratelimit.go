@@ -152,7 +152,7 @@ func (s *Handlers) limitMethod(name, method string, deny func(w http.ResponseWri
 // chargeGlobalAuthorize takes one token from the unkeyed ceiling on code
 // issuance. It is called by the authorize submit handler right before a code is
 // sealed, i.e. only for submissions that passed parsing, the size budget, the
-// allow-list and the upstream check, so requests that can never yield a code
+// Garmin check, so requests that can never yield a code
 // cannot exhaust it. When the ceiling is empty it sets Retry-After on w and
 // returns false: the caller answers 429 like the per-IP limit does. Each
 // submission is charged at most once (it is the only call site).

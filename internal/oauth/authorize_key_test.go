@@ -119,3 +119,32 @@ func TestAuthorizeGarmin5xxGives502(t *testing.T) {
 	e.val.err = errors.New("dial tcp: i/o timeout")
 	mustPage(t, e.post(goodForm(e.sealedForm(t))), http.StatusBadGateway)
 }
+
+func TestAuthorizeNilValidatorFailsClosed(t *testing.T) {
+	e := newAZ(t)
+	e.srv.validator = nil
+	rec := e.post(goodForm(e.sealedForm(t)))
+	mustPage(t, rec, http.StatusBadGateway)
+	if strings.Contains(rec.Body.String(), testKey) {
+		t.Error("key echoed")
+	}
+}
+
+// JSON escapes ", < and & to six bytes each; the size budget must count that.
+func TestAuthorizeMaxEscapingKeyFitsEveryToken(t *testing.T) {
+	e := newAZ(t)
+	key := strings.Repeat(`"<&`, maxKeyLen/3) + strings.Repeat("a", maxKeyLen%3)
+	if len(key) != maxKeyLen {
+		t.Fatalf("fixture length %d", len(key))
+	}
+	u := mustSeeOther(t, e.post(url.Values{requestField: {e.sealedForm(t)}, keyField: {key}}))
+	if u.Query().Get("code") == "" {
+		t.Fatalf("no code issued: %v", u.Query())
+	}
+	tk := newTK(t)
+	access, refresh := tk.wantOK(t, tk.do(tk.codeForm(tk.none, tk.code(t, tk.none, func(c *tokens.Code) { c.APIKey = key }))))
+	if got, err := tk.srv.OpenAccess(access); err != nil || got != key {
+		t.Errorf("access: %v", err)
+	}
+	tk.wantOK(t, tk.do(tk.refreshForm(tk.none, refresh)))
+}

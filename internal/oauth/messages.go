@@ -10,7 +10,7 @@ import (
 )
 
 // Message ids of the authorize and error pages. Templates refer to them as
-// string literals ({{T "audit.heading"}}); a test checks that each one used
+// string literals ({{T "page.title"}}); a test checks that each one used
 // there exists in the catalog.
 const (
 	// Messages that are produced in Go (form banner, error page).
@@ -62,7 +62,6 @@ var catalog = map[string]string{
 	"client.name":       "Application name:",
 	"client.unnamed":    "Unnamed application",
 	"client.unverified": "self-declared, unverified",
-	"field.optional":    "(optional)",
 
 	"notice.heading": "Notice from the operator",
 	"notice.contact": "Contact:",
@@ -70,6 +69,8 @@ var catalog = map[string]string{
 	"privacy.sealed":      "Your key is sealed into the token and never stored or logged.",
 	"privacy.proxy":       "A TLS reverse proxy in front of this server sees the key while you submit it.",
 	"privacy.third_party": "This server is not affiliated with Garmin and you are giving your Personal API key to a third party.",
+	"privacy.bearer":      "The token is a bearer secret: whoever holds it can use your Garmin data until it expires, and nothing is revoked when you disconnect the connector.",
+	"privacy.logs":        "This server logs request metadata only (time, client IP address on sign-in attempts, status); it never logs your key, tokens, or Garmin data.",
 	"hint.continue":       "Only continue if you started this connection yourself.",
 
 	"button.authorize": "Authorize",
@@ -144,6 +145,6 @@ func msgText(m message) string {
 	return text(m.ID, m.Args...)
 }
 
-// templateFuncs expose the catalog to the page templates: {{T "audit.heading"}}
+// templateFuncs expose the catalog to the page templates: {{T "page.title"}}
 // and {{Msg .Error}}.
 var templateFuncs = template.FuncMap{"T": text, "Msg": msgText}

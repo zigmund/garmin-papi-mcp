@@ -419,6 +419,10 @@ func redirectHost(uri string) string {
 // rejected; 502 no verdict, so the check fails closed). Neither the key nor
 // Garmin's text is logged.
 func (s *Handlers) validateKey(ctx context.Context, apiKey string, r *http.Request) (msg message, status int) {
+	if s.validator == nil { // misconfigured: fail closed, never issue a code
+		s.log.Error("no key validator configured")
+		return uiMsg(msgKeyNoVerdict), http.StatusBadGateway
+	}
 	err := s.validator.Validate(ctx, apiKey)
 	if err == nil {
 		return message{}, 0
