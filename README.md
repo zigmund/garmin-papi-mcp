@@ -74,7 +74,7 @@ An empty result is reported as "no data for this period", not as an error. A Gar
 
 ## Connect from claude.ai or ChatGPT
 
-1. Add a custom connector (claude.ai: Settings -> Connectors -> Add custom connector; ChatGPT: Settings -> Connectors -> add a custom MCP connector).
+1. Add a custom connector (claude.ai: Settings -> Connectors -> Add custom connector; ChatGPT: turn on Developer mode under Settings -> Apps & Connectors -> Advanced settings, then add a custom MCP connector). Whether ChatGPT offers custom MCP connectors depends on your plan and, for workspaces, on the workspace settings.
 2. Enter the MCP URL: `<public_url>/mcp`, for example `https://garmin-papi-mcp.zigmund.xyz/mcp`.
 3. When the client sends you to the login page, read it, paste your Personal API key, choose how long to stay connected, accept the terms if the operator set any, and press Authorize.
 
