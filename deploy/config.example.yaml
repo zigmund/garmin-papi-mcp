@@ -73,7 +73,7 @@ oauth:
   # values mean these defaults; they are generous because claude.ai and ChatGPT
   # use shared egress IPs.
   # rate_limit:
-  #   disabled: false                                  # also turns off authorize_global
+  #   disabled: false                                  # also turns off authorize_global and key_check_global
   #   register:  { per_minute: 60,  burst: 30 }
   #   token:     { per_minute: 300, burst: 100 }
   #   authorize: { per_minute: 30,  burst: 10 }
@@ -81,6 +81,9 @@ oauth:
   #   # Unkeyed ceiling on all POST /oauth/authorize submissions together. When
   #   # unset it is derived from code_ttl so the code cache cannot fill.
   #   # authorize_global: { per_minute: 2500, burst: 2500 }
+  #   # Unkeyed ceiling on Garmin key checks (every authorize POST that reaches
+  #   # the check is one Garmin call, whatever the outcome).
+  #   key_check_global: { per_minute: 300, burst: 100 }
 
 # Limits on the MCP endpoint (429 + Retry-After per IP / per grant, 503 when
 # the global in-flight cap is reached). Every tool call is one or two Garmin

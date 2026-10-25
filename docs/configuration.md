@@ -53,7 +53,7 @@ Optional, shown on the authorize page (English; plain text, HTML-escaped).
 
 ### `oauth.rate_limit`
 
-Per-IP token buckets (sustained `per_minute`, bursts up to `burst`) answered with 429 and `Retry-After`. Defaults are generous because claude.ai and ChatGPT share egress addresses.
+Per-IP token buckets (sustained `per_minute`, bursts up to `burst`), plus two unkeyed ceilings, answered with 429 and `Retry-After`. Defaults are generous because claude.ai and ChatGPT share egress addresses.
 
 | Key | Default (per_minute / burst) | Applies to |
 | --- | --- | --- |
@@ -61,8 +61,9 @@ Per-IP token buckets (sustained `per_minute`, bursts up to `burst`) answered wit
 | `oauth.rate_limit.authorize` | 30 / 10 | `POST /oauth/authorize` |
 | `oauth.rate_limit.token` | 300 / 100 | `POST /oauth/token` |
 | `oauth.rate_limit.authorize_form` | 300 / 100 | `GET /oauth/authorize` |
-| `oauth.rate_limit.authorize_global` | derived from `code_ttl` (2500 / 2500 at `5m`) | All `POST /oauth/authorize` together, unkeyed |
-| `oauth.rate_limit.disabled` | `false` | Switches off all of the above |
+| `oauth.rate_limit.authorize_global` | derived from `code_ttl` (2500 / 2500 at `5m`) | All `POST /oauth/authorize` together, unkeyed; counts submissions that are about to get a code |
+| `oauth.rate_limit.key_check_global` | 300 / 100 | All Garmin key checks of `POST /oauth/authorize` together, unkeyed, whatever the outcome (accepted, rejected, no verdict). Each check is a Garmin call made for whoever submits the form; beyond the ceiling the form answers 429 with `Retry-After` and "try again" without calling Garmin |
+| `oauth.rate_limit.disabled` | `false` | Switches off all of the above, the two ceilings included |
 
 ## `limits` (MCP endpoint)
 

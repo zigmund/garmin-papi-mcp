@@ -28,7 +28,7 @@ garmin-papi-mcp is one Go binary that is both an OAuth 2.1 authorization server 
 | `GET /.well-known/oauth-protected-resource[/mcp]` | protected resource metadata (RFC 9728) | points at this server as its own authorization server |
 | `POST /oauth/register` | dynamic client registration | per-IP rate limit |
 | `GET /oauth/authorize` | credentials form | per-IP rate limit; shows redirect host, client name (unverified), operator notice and terms |
-| `POST /oauth/authorize` | validates the key against Garmin, issues a code, redirects | per-IP and global rate limits |
+| `POST /oauth/authorize` | validates the key against Garmin, issues a code, redirects | per-IP rate limit; global ceilings on Garmin key checks (any outcome) and on issued codes |
 | `POST /oauth/token` | code and refresh token exchange | per-IP rate limit; refresh tokens are single use |
 | `POST /mcp` | MCP JSON-RPC (`initialize`, `tools/list`, `tools/call`) | bearer token required; per-IP and per-grant limits, concurrency caps, body cap |
 
