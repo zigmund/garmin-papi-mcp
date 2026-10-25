@@ -17,6 +17,10 @@ const (
 	exchangeEndpoint = "/personalapitoken-service/personal-api/personal-api-key/token"
 	maxBodyBytes     = 8 << 20
 	maxTokenBytes    = 64 << 10
+	// The exchange endpoint serves text/plain and answers 406 to a bare
+	// "application/json"; data calls stay liberal for the same reason.
+	acceptExchange   = "text/plain, */*"
+	acceptData       = "application/json, */*;q=0.1"
 	defaultUserAgent = "garmin-papi-mcp"
 )
 
@@ -73,7 +77,7 @@ func (c *Client) Get(ctx context.Context, apiKey, path string, query url.Values)
 		if err != nil {
 			return Response{}, err
 		}
-		resp, status, retryAfter, err := c.do(ctx, http.MethodGet, target, "Bearer "+jwt, maxBodyBytes)
+		resp, status, retryAfter, err := c.do(ctx, http.MethodGet, target, "Bearer "+jwt, acceptData, maxBodyBytes)
 		if err != nil {
 			return Response{}, err
 		}
@@ -93,7 +97,7 @@ func (c *Client) Get(ctx context.Context, apiKey, path string, query url.Values)
 
 func (c *Client) token(ctx context.Context, apiKey string, force bool) (string, error) {
 	return c.cache.get(ctx, hashKey(apiKey), force, c.now, func(ctx context.Context) (string, error) {
-		resp, status, retryAfter, err := c.do(ctx, http.MethodPost, c.baseURL+exchangeEndpoint, "ApiKey "+apiKey, maxTokenBytes)
+		resp, status, retryAfter, err := c.do(ctx, http.MethodPost, c.baseURL+exchangeEndpoint, "ApiKey "+apiKey, acceptExchange, maxTokenBytes)
 		if err != nil {
 			return "", err
 		}
@@ -113,14 +117,14 @@ func (c *Client) token(ctx context.Context, apiKey string, force bool) (string, 
 
 // do sends one request and reads at most limit bytes of body. It returns the
 // raw status even for non-2xx; errors are transport/body-limit failures only.
-func (c *Client) do(ctx context.Context, method, target, auth string, limit int64) (Response, int, time.Duration, error) {
+func (c *Client) do(ctx context.Context, method, target, auth, accept string, limit int64) (Response, int, time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, method, target, nil)
 	if err != nil {
 		return Response{}, 0, 0, errors.New("garmin: bad request")
 	}
 	req.Header.Set("Authorization", auth)
 	req.Header.Set("User-Agent", c.userAgent)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", accept)
 	res, err := c.hc.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
