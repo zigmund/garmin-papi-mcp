@@ -52,11 +52,19 @@ type fakeGarmin struct {
 	mu     sync.Mutex
 	bodies map[string]string // request path (with leading slash) -> JSON body
 	hits   map[string]int
+	query  map[string][]string // request path -> RawQuery of every data request
+
+	// Optional, set before any request: each data request first signals
+	// entered (if non-nil), then waits for gate to be closed (if non-nil),
+	// then sleeps delay.
+	entered chan struct{}
+	gate    chan struct{}
+	delay   time.Duration
 }
 
 func newFakeGarmin(t *testing.T, bodies map[string]string) *fakeGarmin {
 	t.Helper()
-	f := &fakeGarmin{jwt: fakeJWT(), bodies: bodies, hits: map[string]int{}}
+	f := &fakeGarmin{jwt: fakeJWT(), bodies: bodies, hits: map[string]int{}, query: map[string][]string{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -64,6 +72,11 @@ func newFakeGarmin(t *testing.T, bodies map[string]string) *fakeGarmin {
 
 func (f *fakeGarmin) serve(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == exchangePath {
+		// Mimic the real endpoint: it serves text/plain only.
+		if acc := r.Header.Get("Accept"); acc != "" && !strings.Contains(acc, "text/plain") && !strings.Contains(acc, "*/*") {
+			w.WriteHeader(http.StatusNotAcceptable)
+			return
+		}
 		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "ApiKey "+fakeAPIKey {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -73,11 +86,21 @@ func (f *fakeGarmin) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.hits[r.URL.Path]++
+	f.query[r.URL.Path] = append(f.query[r.URL.Path], r.URL.RawQuery)
 	body, ok := f.bodies[r.URL.Path]
 	f.mu.Unlock()
 	if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+f.jwt {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
+	}
+	if f.entered != nil {
+		f.entered <- struct{}{}
+	}
+	if f.gate != nil {
+		<-f.gate
+	}
+	if f.delay > 0 {
+		time.Sleep(f.delay)
 	}
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
@@ -92,6 +115,13 @@ func (f *fakeGarmin) hitCount(path string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.hits[path]
+}
+
+// queries returns the RawQuery of every data request for path.
+func (f *fakeGarmin) queries(path string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.query[path]...)
 }
 
 // totalHits is the number of data requests (key exchanges excluded).
@@ -344,4 +374,42 @@ func (s *stack) call(t *testing.T, tool, args string) callOutcome {
 	}
 	out.text = sb.String()
 	return out
+}
+
+// callHTTP is a goroutine-safe tools/call: it never calls t. err is set only
+// for transport failures.
+func (s *stack) callHTTP(tool, args string) (status int, retryAfter string, out callOutcome, err error) {
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":%q,"arguments":%s}}`, tool, args)
+	req, err := http.NewRequest(http.MethodPost, s.url+"/mcp", strings.NewReader(body))
+	if err != nil {
+		return 0, "", out, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+s.access)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return 0, "", out, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, "", out, err
+	}
+	out.status = resp.StatusCode
+	if resp.StatusCode == http.StatusOK {
+		var r struct {
+			Result *struct {
+				IsError bool `json:"isError"`
+			} `json:"result"`
+		}
+		if json.Unmarshal(b, &r) != nil || r.Result == nil {
+			out.protoErr = true
+		} else {
+			out.isError = r.Result.IsError
+		}
+	} else {
+		out.protoErr = true
+	}
+	return resp.StatusCode, resp.Header.Get("Retry-After"), out, nil
 }

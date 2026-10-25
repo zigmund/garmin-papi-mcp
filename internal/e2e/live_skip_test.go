@@ -24,6 +24,9 @@ func TestLiveSkipsWhenEnvUnset(t *testing.T) {
 	if !skippedRun(t) {
 		t.Fatal("live test did not skip with GARMIN_LIVE unset")
 	}
+	if _, reason := liveKey(os.Getenv, os.ReadFile); reason != "GARMIN_LIVE is not 1; live test skipped" {
+		t.Fatalf("skip reason = %q", reason)
+	}
 }
 
 func TestLiveSkipsWhenKeyFileMissing(t *testing.T) {

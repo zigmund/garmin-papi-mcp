@@ -60,7 +60,9 @@ func classify(out callOutcome) string {
 
 // authFailure reports an error line that means the key was refused.
 func authFailure(line string) bool {
-	return strings.Contains(line, "HTTP 401") || strings.Contains(line, "HTTP 403")
+	// A rejected key surfaces as HTTP 401 from /mcp (handled as a protocol
+	// error); inside a tool result only a 403 is an auth-type tool error.
+	return strings.Contains(line, "HTTP 403")
 }
 
 func TestLiveAllReadOnlyTools(t *testing.T) {

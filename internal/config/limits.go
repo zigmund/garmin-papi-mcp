@@ -9,7 +9,7 @@ const (
 	DefaultProxyIPBurst        = 60
 	DefaultProxyTokenPerMinute = 60
 	DefaultProxyTokenBurst     = 20
-	DefaultMaxConcurrentPerTok = 8
+	DefaultMaxConcurrentPerTok = 16
 	DefaultMaxInFlight         = 1024
 	DefaultMaxRequestBody      = 10 << 20 // bytes
 

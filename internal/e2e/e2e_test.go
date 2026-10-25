@@ -147,9 +147,30 @@ func TestAllToolsListedAndCallable(t *testing.T) {
 			}
 		})
 	}
-	// Every served path was requested at least once: no path in the table is
-	// dead, and every tool path is one the fake knows (unknown paths 404 and
-	// would have failed above).
+	// The exact Garmin query of every query-bearing tool (url.Values
+	// encoding sorts the keys).
+	for path, want := range map[string]string{
+		"/usersummary-service/usersummary/daily":                          "calendarDate=" + day,
+		"/sleep-service/sleep/dailySleep":                                 "date=" + day,
+		"/wellness-service/wellness/dailyHeartRate":                       "date=" + day,
+		"/wellness-service/wellness/bodyBattery/reports/daily":            "endDate=" + rangeEnd + "&startDate=" + day,
+		"/usersummary-service/v2/dailysummaries":                          "endDate=" + rangeEnd + "&startDate=" + day,
+		"/sleep-service/sleep/dailySleepSummariesByDate":                  "endDate=" + rangeEnd + "&startDate=" + day,
+		"/usersummary-service/stats/stress/daily/" + day + "/" + rangeEnd: "",
+		"/usersummary-service/stats/steps/daily/" + day + "/" + rangeEnd:  "",
+		"/activitylist-service/activities/search/activities":              "limit=2&start=0",
+		"/nutrition-service/food/logs/" + day:                             "includeMedia=false",
+		"/periodichealth-service/menstrualcycle/dayview/" + day:           "reducedResponse=true&skipbm=true",
+		"/weight-service/weight/range/" + day + "/" + rangeEnd:            "includeAll=false",
+	} {
+		qs := g.queries(path)
+		if len(qs) != 1 || qs[0] != want {
+			t.Errorf("%s: queries = %q, want exactly [%q]", path, qs, want)
+		}
+	}
+	// Every served path was requested at least once. Two-endpoint tools
+	// return partial results when one path 404s (the call above still
+	// succeeds), so this hit-count loop is what catches a wrong path there.
 	sort.Strings(want)
 	for _, p := range want {
 		if g.hitCount(p) == 0 {
