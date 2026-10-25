@@ -1,0 +1,325 @@
+package garmin
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+const exchangePath = "/personalapitoken-service/personal-api/personal-api-key/token"
+
+type fakeGarmin struct {
+	srv       *httptest.Server
+	exchanges atomic.Int32
+	dataCalls atomic.Int32
+	mu        sync.Mutex
+	tokenFn   func(n int) string                                  // token body for nth exchange (1-based)
+	exchStat  int                                                 // exchange status override
+	dataFn    func(w http.ResponseWriter, r *http.Request, n int) // data handler
+	lastAuth  string
+	lastQuery string
+}
+
+func newFake(t *testing.T) *fakeGarmin {
+	t.Helper()
+	f := &fakeGarmin{}
+	f.tokenFn = func(n int) string { return fmt.Sprintf("tok%d.%s.sig\n", n, "e30") }
+	f.dataFn = func(w http.ResponseWriter, r *http.Request, n int) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == exchangePath {
+			if r.Method != http.MethodPost {
+				t.Errorf("exchange method %s", r.Method)
+			}
+			if !strings.HasPrefix(r.Header.Get("Authorization"), "ApiKey ") {
+				t.Errorf("exchange auth header wrong")
+			}
+			n := int(f.exchanges.Add(1))
+			time.Sleep(5 * time.Millisecond)
+			f.mu.Lock()
+			st, fn := f.exchStat, f.tokenFn
+			f.mu.Unlock()
+			if st != 0 {
+				w.WriteHeader(st)
+				return
+			}
+			_, _ = w.Write([]byte(fn(n)))
+			return
+		}
+		n := int(f.dataCalls.Add(1))
+		f.mu.Lock()
+		f.lastAuth = r.Header.Get("Authorization")
+		f.lastQuery = r.URL.RawQuery
+		fn := f.dataFn
+		f.mu.Unlock()
+		fn(w, r, n)
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func jwtWithExp(exp int64) string {
+	p := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, exp)))
+	return "hdr." + p + ".sig"
+}
+
+func TestExchangeTrimsJWT(t *testing.T) {
+	f := newFake(t)
+	f.tokenFn = func(int) string { return "abc.def.ghi\n" }
+	c := NewClient(f.srv.URL, f.srv.Client())
+	q := url.Values{"a": {"1"}}
+	resp, err := c.Get(context.Background(), "key-1", "/x/y", q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.lastAuth != "Bearer abc.def.ghi" {
+		t.Fatalf("auth = %q", f.lastAuth)
+	}
+	if f.lastQuery != "a=1" || resp.Status != 200 || resp.ContentType != "application/json" || string(resp.Body) != `{"ok":true}` {
+		t.Fatalf("resp %+v q=%q", resp, f.lastQuery)
+	}
+}
+
+func TestJWTCachedUntilExpiry(t *testing.T) {
+	f := newFake(t)
+	now := time.Unix(1_800_000_000, 0)
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	f.tokenFn = func(int) string { return jwtWithExp(now.Add(time.Hour).Unix()) }
+	c := NewClient(f.srv.URL, f.srv.Client(), WithClock(clock))
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if _, err := c.Get(ctx, "k", "/p", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := f.exchanges.Load(); n != 1 {
+		t.Fatalf("exchanges = %d", n)
+	}
+	mu.Lock()
+	now = now.Add(time.Hour - 61*time.Second)
+	mu.Unlock()
+	if _, err := c.Get(ctx, "k", "/p", nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.exchanges.Load(); n != 1 {
+		t.Fatalf("exchanges = %d before refresh window", n)
+	}
+	mu.Lock()
+	now = now.Add(2 * time.Second) // within 60s of exp
+	mu.Unlock()
+	if _, err := c.Get(ctx, "k", "/p", nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.exchanges.Load(); n != 2 {
+		t.Fatalf("exchanges = %d after refresh window", n)
+	}
+}
+
+func TestJWTExpFallback23h(t *testing.T) {
+	f := newFake(t)
+	now := time.Unix(1_800_000_000, 0)
+	var mu sync.Mutex
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	f.tokenFn = func(int) string { return "not-a-jwt" }
+	c := NewClient(f.srv.URL, f.srv.Client(), WithClock(clock))
+	ctx := context.Background()
+	_, _ = c.Get(ctx, "k", "/p", nil)
+	mu.Lock()
+	now = now.Add(22 * time.Hour)
+	mu.Unlock()
+	_, _ = c.Get(ctx, "k", "/p", nil)
+	if n := f.exchanges.Load(); n != 1 {
+		t.Fatalf("exchanges = %d at 22h", n)
+	}
+	mu.Lock()
+	now = now.Add(time.Hour) // 23h total, within 60s of fallback expiry
+	mu.Unlock()
+	_, _ = c.Get(ctx, "k", "/p", nil)
+	if n := f.exchanges.Load(); n != 2 {
+		t.Fatalf("exchanges = %d at 23h", n)
+	}
+}
+
+func TestSingleFlightExchange(t *testing.T) {
+	f := newFake(t)
+	c := NewClient(f.srv.URL, f.srv.Client())
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.Get(context.Background(), "k", "/p", nil); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := f.exchanges.Load(); n != 1 {
+		t.Fatalf("exchanges = %d", n)
+	}
+}
+
+func TestRetryOnceOn401(t *testing.T) {
+	f := newFake(t)
+	f.dataFn = func(w http.ResponseWriter, r *http.Request, n int) {
+		if n == 1 {
+			w.WriteHeader(401)
+			return
+		}
+		_, _ = w.Write([]byte("fine"))
+	}
+	c := NewClient(f.srv.URL, f.srv.Client())
+	resp, err := c.Get(context.Background(), "k", "/p", nil)
+	if err != nil || string(resp.Body) != "fine" {
+		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+	if f.exchanges.Load() != 2 || f.dataCalls.Load() != 2 {
+		t.Fatalf("exch=%d data=%d", f.exchanges.Load(), f.dataCalls.Load())
+	}
+	if f.lastAuth != "Bearer tok2.e30.sig" {
+		t.Fatalf("retry used stale token: %q", f.lastAuth)
+	}
+
+	f2 := newFake(t)
+	f2.dataFn = func(w http.ResponseWriter, r *http.Request, n int) { w.WriteHeader(401) }
+	c2 := NewClient(f2.srv.URL, f2.srv.Client())
+	_, err = c2.Get(context.Background(), "k", "/p", nil)
+	if !errors.Is(err, ErrKeyRejected) {
+		t.Fatalf("err = %v", err)
+	}
+	if f2.exchanges.Load() != 2 || f2.dataCalls.Load() != 2 {
+		t.Fatalf("exch=%d data=%d", f2.exchanges.Load(), f2.dataCalls.Load())
+	}
+}
+
+func TestExchange401IsKeyRejected(t *testing.T) {
+	f := newFake(t)
+	f.exchStat = 401
+	c := NewClient(f.srv.URL, f.srv.Client())
+	_, err := c.Get(context.Background(), "k", "/p", nil)
+	if !errors.Is(err, ErrKeyRejected) {
+		t.Fatalf("err = %v", err)
+	}
+	if err := c.Validate(context.Background(), "k"); !errors.Is(err, ErrKeyRejected) {
+		t.Fatalf("validate err = %v", err)
+	}
+}
+
+func TestValidateForcesExchange(t *testing.T) {
+	f := newFake(t)
+	c := NewClient(f.srv.URL, f.srv.Client())
+	for i := 0; i < 2; i++ {
+		if err := c.Validate(context.Background(), "k"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := f.exchanges.Load(); n != 2 {
+		t.Fatalf("exchanges = %d", n)
+	}
+	if _, err := c.Get(context.Background(), "k", "/p", nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.exchanges.Load(); n != 2 {
+		t.Fatalf("Get after Validate should reuse token, exchanges = %d", n)
+	}
+}
+
+func TestRateLimited429HasRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		hdr  string
+		want time.Duration
+	}{{"7", 7 * time.Second}, {"", 0}, {"soon", 0}} {
+		f := newFake(t)
+		f.dataFn = func(w http.ResponseWriter, r *http.Request, n int) {
+			if tc.hdr != "" {
+				w.Header().Set("Retry-After", tc.hdr)
+			}
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte("secret-body"))
+		}
+		c := NewClient(f.srv.URL, f.srv.Client())
+		_, err := c.Get(context.Background(), "k", "/p", nil)
+		var rl *RateLimitedError
+		if !errors.As(err, &rl) || rl.RetryAfter != tc.want {
+			t.Fatalf("hdr %q: err = %v", tc.hdr, err)
+		}
+		if strings.Contains(err.Error(), "secret-body") {
+			t.Fatal("body leaked")
+		}
+	}
+}
+
+func TestStatus5xxIsStatusError(t *testing.T) {
+	f := newFake(t)
+	f.dataFn = func(w http.ResponseWriter, r *http.Request, n int) {
+		w.WriteHeader(503)
+		_, _ = w.Write([]byte("secret-body"))
+	}
+	c := NewClient(f.srv.URL, f.srv.Client())
+	_, err := c.Get(context.Background(), "k", "/p", nil)
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != 503 {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-body") {
+		t.Fatal("body leaked")
+	}
+}
+
+func TestNoContentReturnsStatus204(t *testing.T) {
+	f := newFake(t)
+	f.dataFn = func(w http.ResponseWriter, r *http.Request, n int) { w.WriteHeader(204) }
+	c := NewClient(f.srv.URL, f.srv.Client())
+	resp, err := c.Get(context.Background(), "k", "/p", nil)
+	if err != nil || resp.Status != 204 || len(resp.Body) != 0 {
+		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+}
+
+func TestCacheKeyedByHashNotKey(t *testing.T) {
+	f := newFake(t)
+	c := NewClient(f.srv.URL, f.srv.Client())
+	const key = "super-secret-api-key-123"
+	if _, err := c.Get(context.Background(), key, "/p", nil); err != nil {
+		t.Fatal(err)
+	}
+	if s := fmt.Sprintf("%+v", c); strings.Contains(s, key) {
+		t.Fatal("raw key present in client dump")
+	}
+	if _, ok := c.cache.entries[hashKey(key)]; !ok {
+		t.Fatal("entry not keyed by sha256(key)")
+	}
+	if _, ok := c.cache.entries[key]; ok {
+		t.Fatal("raw key used as map key")
+	}
+}
+
+func TestBodyLimit(t *testing.T) {
+	f := newFake(t)
+	f.dataFn = func(w http.ResponseWriter, r *http.Request, n int) {
+		_, _ = w.Write(make([]byte, 8<<20+1))
+	}
+	c := NewClient(f.srv.URL, f.srv.Client())
+	if _, err := c.Get(context.Background(), "k", "/p", nil); err == nil {
+		t.Fatal("expected error for oversized body")
+	}
+	f.dataFn = func(w http.ResponseWriter, r *http.Request, n int) {
+		_, _ = w.Write(make([]byte, 8<<20))
+	}
+	resp, err := c.Get(context.Background(), "k", "/p", nil)
+	if err != nil || len(resp.Body) != 8<<20 {
+		t.Fatalf("exact limit should pass: %v", err)
+	}
+}
